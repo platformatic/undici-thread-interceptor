@@ -206,3 +206,18 @@ test('hooks - should throw if handler not a function', async (t) => {
     strictEqual(err.message, 'Expected a function, got string')
   }
 })
+
+test('hooks - should throw if handler is async', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  try {
+    createThreadInterceptor({
+      domain: '.local',
+      onResponse: async () => {},
+    })
+    throw new Error('should not be here')
+  } catch (err) {
+    strictEqual(err.message, 'Async hooks are not supported')
+  }
+})
