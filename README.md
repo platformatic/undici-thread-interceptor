@@ -146,13 +146,62 @@ const { interceptor } = wire({ server: app, port: parentPort });
 
 // ...
 
-interceptor.close()
+interceptor.close();
 ```
-
 
 ## API
 
-TBD
+### Hooks
+
+It's possible to set some simple **synchronous** functions as hooks:
+
+- `onClientRequest(req)`
+- `onClientResponse(res)`
+- `onClientError(err)`
+- `onServerRequest(req)`
+- `onServerResponse(res)`
+- `onServerError(err)`
+
+#### Client hooks
+
+These are se on the agent dispatcher. It's possible to pass a function or an array of functions
+(in the latter case, the hooks are executed in order)
+
+```javascript
+const interceptor = createThreadInterceptor({
+  domain: ".local",
+  onClientRequest: (req) => console.log("onClientRequest called", req),
+});
+interceptor.route("myserver", worker);
+
+const agent = new Agent().compose(interceptor);
+
+const { statusCode } = await request("http://myserver.local", {
+  dispatcher: agent,
+});
+```
+
+#### Server hooks
+
+These can be passed to the `wire` function in workers. e.g. with Fastify:
+
+```javascript
+import { wire } from "undici-thread-interceptor";
+import { parentPort } from "node:worker_threads";
+import fastify from "fastify";
+
+const app = fastify();
+
+app.get("/", (req, reply) => {
+  reply.send({ hello: "world" });
+});
+
+wire({
+  server: app,
+  port: parentPort,
+  onServerRequest: (req) => console.log("onServerRequest called", req),
+});
+```
 
 ## License
 

@@ -61,14 +61,14 @@ function createThreadInterceptor (opts) {
 
       delete newOpts.dispatcher
 
-      hooks.fireOnRequest(newOpts)
+      hooks.fireOnClientRequest(newOpts)
 
       if (newOpts.body?.[Symbol.asyncIterator]) {
         collectBodyAndDispatch(newOpts, handler).then(() => {
           port.postMessage({ type: 'request', id, opts: newOpts, threadId })
         }, (err) => {
           clearTimeout(handle)
-          hooks.fireOnError(err)
+          hooks.fireOnClientError(err)
           handler.onError(err)
         })
       } else {
@@ -89,11 +89,11 @@ function createThreadInterceptor (opts) {
         clearTimeout(handle)
 
         if (err) {
-          hooks.fireOnError(err)
+          hooks.fireOnClientError(err)
           handler.onError(err)
           return
         }
-        hooks.fireOnResponse(res)
+        hooks.fireOnClientResponse(res)
 
         const headers = []
         for (const [key, value] of Object.entries(res.headers)) {
@@ -227,6 +227,7 @@ function createThreadInterceptor (opts) {
       }
     }
   }
+  res.hooks = hooks
 
   return res
 }
@@ -260,9 +261,11 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         query: opts.query,
         body: opts.body instanceof Uint8Array ? Buffer.from(opts.body) : opts.body,
       }
+      interceptor.hooks.fireOnServerRequest(injectOpts)
 
       const onInject = (err, res) => {
         if (err) {
+          interceptor.hooks.fireOnServerError(err)
           port.postMessage({ type: 'response', id, err })
           return
         }
@@ -285,6 +288,7 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
           id,
           res: newRes,
         }
+        interceptor.hooks.fireOnServerResponse(newRes)
 
         // So we route the message back to the port
         // that sent the request
