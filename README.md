@@ -155,12 +155,15 @@ interceptor.close();
 
 It's possible to set some simple **synchronous** functions as hooks:
 
-- `onClientRequest(req)`
-- `onClientResponse(req, res)`
-- `onClientError(req, res, error)`
-- `onServerRequest(req)`
+- `onServerRequest(req)
 - `onServerResponse(req, res)`
 - `onServerError(req, res, error)`
+- `onClientRequest(req, clientCtx)`
+- `onClientResponse(req, res, clientCtx)`
+- `onClientError(req, res, clientCtx, error)`
+
+The `clientCtx` is used to pass through hooks calls objects which cannot be set on request
+(which is then sent through `postMessage`, so it might be not serializable)
 
 #### Client hooks
 

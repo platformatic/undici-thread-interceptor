@@ -61,7 +61,9 @@ function createThreadInterceptor (opts) {
 
       delete newOpts.dispatcher
 
-      hooks.fireOnClientRequest(newOpts)
+      // We use it as client context where hooks can add non-serializable properties
+      const clientCtx = {}
+      hooks.fireOnClientRequest(newOpts, clientCtx)
 
       if (newOpts.body?.[Symbol.asyncIterator]) {
         collectBodyAndDispatch(newOpts, handler).then(() => {
@@ -89,11 +91,11 @@ function createThreadInterceptor (opts) {
         clearTimeout(handle)
 
         if (err) {
-          hooks.fireOnClientError(newOpts, res, err)
+          hooks.fireOnClientError(newOpts, res, clientCtx, err)
           handler.onError(err)
           return
         }
-        hooks.fireOnClientResponse(newOpts, res)
+        hooks.fireOnClientResponse(newOpts, res, clientCtx)
 
         const headers = []
         for (const [key, value] of Object.entries(res.headers)) {

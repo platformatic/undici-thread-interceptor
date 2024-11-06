@@ -175,7 +175,7 @@ test('hooks - onClientError', async (t) => {
 
   const interceptor = createThreadInterceptor({
     domain: '.local',
-    onClientError: (_req, _rep, error) => {
+    onClientError: (_req, _rep, _ctx, error) => {
       hookCalled = error
     }
   })
@@ -198,11 +198,11 @@ test('hooks - multiple onClientErrors', async (t) => {
   t.after(() => worker.terminate())
   const hookCalled = []
 
-  const onClientError1 = (_req, _rep, error) => {
+  const onClientError1 = (_req, _rep, _ctx, error) => {
     hookCalled.push({ error1: error.message })
   }
 
-  const onClientError2 = (_req, _rep, error) => {
+  const onClientError2 = (_req, _rep, _ctx, error) => {
     hookCalled.push({ error2: error.message })
   }
 
@@ -334,6 +334,32 @@ test('hooks - request propagation between onClientRequest and onClientResponse',
     },
     onClientResponse: (req, res) => {
       hookCalledClient = req.dataInRequest
+    }
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(hookCalledClient, 'propagated')
+})
+
+test('hooks - context propagation between onClientRequest and onClientResponse', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+  let hookCalledClient
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    onClientRequest: (_req, ctx) => {
+      ctx.data = 'propagated'
+    },
+    onClientResponse: (req, _res, ctx) => {
+      hookCalledClient = ctx.data
     }
   })
   interceptor.route('myserver', worker)
