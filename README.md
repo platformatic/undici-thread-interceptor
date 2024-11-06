@@ -156,11 +156,11 @@ interceptor.close();
 It's possible to set some simple **synchronous** functions as hooks:
 
 - `onClientRequest(req)`
-- `onClientResponse(res)`
-- `onClientError(err)`
+- `onClientResponse(req, res)`
+- `onClientError(req, res, error)`
 - `onServerRequest(req)`
-- `onServerResponse(res)`
-- `onServerError(err)`
+- `onServerResponse(req, res)`
+- `onServerError(req, res, error)`
 
 #### Client hooks
 

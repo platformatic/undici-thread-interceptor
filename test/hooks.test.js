@@ -125,8 +125,8 @@ test('hooks - onClientResponse', async (t) => {
 
   const interceptor = createThreadInterceptor({
     domain: '.local',
-    onClientResponse: (opts) => {
-      hookCalled = Buffer.from(opts.rawPayload).toString()
+    onClientResponse: (_req, res) => {
+      hookCalled = Buffer.from(res.rawPayload).toString()
     }
   })
   interceptor.route('myserver', worker)
@@ -145,12 +145,12 @@ test('hooks - multiple onClientResponses', async (t) => {
   t.after(() => worker.terminate())
   const hookCalled = []
 
-  const onClientResponse1 = (opts) => {
-    hookCalled.push({ res1: Buffer.from(opts.rawPayload).toString() })
+  const onClientResponse1 = (_req, res) => {
+    hookCalled.push({ res1: Buffer.from(res.rawPayload).toString() })
   }
 
-  const onClientResponse2 = (opts) => {
-    hookCalled.push({ res2: Buffer.from(opts.rawPayload).toString() })
+  const onClientResponse2 = (req, res) => {
+    hookCalled.push({ res2: Buffer.from(res.rawPayload).toString() })
   }
 
   const interceptor = createThreadInterceptor({
@@ -175,7 +175,7 @@ test('hooks - onClientError', async (t) => {
 
   const interceptor = createThreadInterceptor({
     domain: '.local',
-    onClientError: (error) => {
+    onClientError: (_req, _rep, error) => {
       hookCalled = error
     }
   })
@@ -198,11 +198,11 @@ test('hooks - multiple onClientErrors', async (t) => {
   t.after(() => worker.terminate())
   const hookCalled = []
 
-  const onClientError1 = (error) => {
+  const onClientError1 = (_req, _rep, error) => {
     hookCalled.push({ error1: error.message })
   }
 
-  const onClientError2 = (error) => {
+  const onClientError2 = (_req, _rep, error) => {
     hookCalled.push({ error2: error.message })
   }
 
@@ -295,4 +295,55 @@ test('hooks - onServerError', async (t) => {
   })
   await sleep(300)
   deepStrictEqual(lines, ['onServerError called: kaboom'])
+})
+
+test('hooks - request propagation between onServerRequest and onServerResponse', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'server-hooks', 'worker-server-hooks.js'), { stdout: true })
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+
+  const lines = []
+  worker.stdout.pipe(split2()).on('data', line => {
+    lines.push(line)
+  })
+  await sleep(300)
+  deepStrictEqual(lines, ['onServerRequest called {"method":"GET","url":"/","headers":{"host":"myserver.local"}}', 'onServerReponse called: propagated'])
+})
+
+test('hooks - request propagation between onClientRequest and onClientResponse', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+  let hookCalledClient
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    onClientRequest: (req) => {
+      req.dataInRequest = 'propagated'
+    },
+    onClientResponse: (req, res) => {
+      hookCalledClient = req.dataInRequest
+    }
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(hookCalledClient, 'propagated')
 })

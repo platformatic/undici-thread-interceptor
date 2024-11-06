@@ -68,7 +68,7 @@ function createThreadInterceptor (opts) {
           port.postMessage({ type: 'request', id, opts: newOpts, threadId })
         }, (err) => {
           clearTimeout(handle)
-          hooks.fireOnClientError(err)
+          hooks.fireOnClientError(newOpts, null, err)
           handler.onError(err)
         })
       } else {
@@ -89,11 +89,11 @@ function createThreadInterceptor (opts) {
         clearTimeout(handle)
 
         if (err) {
-          hooks.fireOnClientError(err)
+          hooks.fireOnClientError(newOpts, res, err)
           handler.onError(err)
           return
         }
-        hooks.fireOnClientResponse(res)
+        hooks.fireOnClientResponse(newOpts, res)
 
         const headers = []
         for (const [key, value] of Object.entries(res.headers)) {
@@ -265,7 +265,7 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
 
       const onInject = (err, res) => {
         if (err) {
-          interceptor.hooks.fireOnServerError(err)
+          interceptor.hooks.fireOnServerError(injectOpts, res, err)
           port.postMessage({ type: 'response', id, err })
           return
         }
@@ -288,7 +288,7 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
           id,
           res: newRes,
         }
-        interceptor.hooks.fireOnServerResponse(newRes)
+        interceptor.hooks.fireOnServerResponse(injectOpts, newRes)
 
         // So we route the message back to the port
         // that sent the request

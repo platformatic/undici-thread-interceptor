@@ -12,8 +12,12 @@ app.get('/', (req, reply) => {
 wire({
   server: app,
   port: parentPort,
-  onServerResponse: (_req, res) => {
-    const payload = Buffer.from(res.rawPayload).toString()
-    console.log('onServerResponse called', JSON.stringify(payload))
+  onServerRequest: req => {
+    console.log('onServerRequest called', JSON.stringify(req))
+    req.dataInRequest = 'propagated'
+  },
+  onServerResponse: (req, res) => {
+    const { dataInRequest } = req
+    console.log('onServerReponse called:', dataInRequest)
   }
 })
