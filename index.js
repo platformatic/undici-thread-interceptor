@@ -5,6 +5,7 @@ const hyperid = require('hyperid')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('undici')
 const { threadId, MessageChannel, parentPort } = require('worker_threads')
 const inject = require('light-my-request')
+const Hooks = require('./lib/hooks')
 
 const kAddress = Symbol('undici-thread-interceptor.address')
 
@@ -14,6 +15,7 @@ function createThreadInterceptor (opts) {
   const forwarded = new Map()
   const nextId = hyperid()
   const domain = opts?.domain
+  const hooks = new Hooks(opts)
   let timeout = opts?.timeout
 
   if (timeout === true) {
@@ -59,12 +61,16 @@ function createThreadInterceptor (opts) {
 
       delete newOpts.dispatcher
 
+      // We use it as client context where hooks can add non-serializable properties
+      const clientCtx = {}
+      hooks.fireOnClientRequest(newOpts, clientCtx)
+
       if (newOpts.body?.[Symbol.asyncIterator]) {
         collectBodyAndDispatch(newOpts, handler).then(() => {
           port.postMessage({ type: 'request', id, opts: newOpts, threadId })
         }, (err) => {
           clearTimeout(handle)
-
+          hooks.fireOnClientError(newOpts, null, err)
           handler.onError(err)
         })
       } else {
@@ -85,9 +91,11 @@ function createThreadInterceptor (opts) {
         clearTimeout(handle)
 
         if (err) {
+          hooks.fireOnClientError(newOpts, res, clientCtx, err)
           handler.onError(err)
           return
         }
+        hooks.fireOnClientResponse(newOpts, res, clientCtx)
 
         const headers = []
         for (const [key, value] of Object.entries(res.headers)) {
@@ -221,6 +229,7 @@ function createThreadInterceptor (opts) {
       }
     }
   }
+  res.hooks = hooks
 
   return res
 }
@@ -254,9 +263,11 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         query: opts.query,
         body: opts.body instanceof Uint8Array ? Buffer.from(opts.body) : opts.body,
       }
+      interceptor.hooks.fireOnServerRequest(injectOpts)
 
       const onInject = (err, res) => {
         if (err) {
+          interceptor.hooks.fireOnServerError(injectOpts, res, err)
           port.postMessage({ type: 'response', id, err })
           return
         }
@@ -279,6 +290,7 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
           id,
           res: newRes,
         }
+        interceptor.hooks.fireOnServerResponse(injectOpts, newRes)
 
         // So we route the message back to the port
         // that sent the request
