@@ -12,9 +12,10 @@ app.get('/', (req, reply) => {
 wire({
   server: app,
   port: parentPort,
-  onServerRequest: req => {
+  onServerRequest: (req, cb) => {
     console.log('onServerRequest called', JSON.stringify(req))
     req.dataInRequest = 'propagated'
+    return cb()
   },
   onServerResponse: (req, res) => {
     const { dataInRequest } = req

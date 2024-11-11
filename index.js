@@ -263,7 +263,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         query: opts.query,
         body: opts.body instanceof Uint8Array ? Buffer.from(opts.body) : opts.body,
       }
-      // the cb is always fired even if there are no server request hooks set
       interceptor.hooks.fireOnServerRequest(injectOpts, () => {
         const onInject = (err, res) => {
           if (err) {

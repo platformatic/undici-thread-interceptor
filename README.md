@@ -165,13 +165,9 @@ It's possible to set some simple **synchronous** functions as hooks:
 The `clientCtx` is used to pass through hooks calls objects which cannot be set on request
 (which is then sent through `postMessage`, so it might be not serializable).
 
-On `onServerRequest`, the `cb` is not supposed to be called by the hooks, but they can
-wrap/decorate it.
-
 #### Client hooks
 
-These are se on the agent dispatcher. It's possible to pass a function or an array of functions
-(in the latter case, the hooks are executed in order)
+These are set on the agent dispatcher.
 
 ```javascript
 const interceptor = createThreadInterceptor({
@@ -205,7 +201,10 @@ app.get("/", (req, reply) => {
 wire({
   server: app,
   port: parentPort,
-  onServerRequest: (req) => console.log("onServerRequest called", req),
+  onServerRequest: (req, cb) => {
+    console.log("onServerRequest called", req);
+    cb();
+  },
 });
 ```
 
