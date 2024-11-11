@@ -6,13 +6,15 @@ const { wire } = require('../../..')
 
 const app = fastify()
 
-app.get('/', (req, reply) => {
+app.get('/', (_req, reply) => {
   reply.send({ hello: workerData?.message || 'world' })
 })
 wire({
   server: app,
   port: parentPort,
-  onServerRequest: req => {
+  onServerRequest: (req, cb) => {
     console.log('onServerRequest called', JSON.stringify(req))
+    cb()
+    // cb(null, 'done')
   }
 })

@@ -24,6 +24,21 @@ test('hooks - should throw if handler not a function', async (t) => {
   }
 })
 
+test('hooks - should throw onServerRequest is an array', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  try {
+    createThreadInterceptor({
+      domain: '.local',
+      onServerRequest: ['nor a function'],
+    })
+    throw new Error('should not be here')
+  } catch (err) {
+    strictEqual(err.message, 'Expected a function, got object')
+  }
+})
+
 test('hooks - should throw if handler is async', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
@@ -69,55 +84,6 @@ test('hooks - onClientRequest', async (t) => {
   })
 })
 
-test('hooks - multiple onClientRequests', async (t) => {
-  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
-  t.after(() => worker.terminate())
-  const hookCalled = []
-
-  const firstHook = (opts) => {
-    hookCalled.push({ first: opts })
-  }
-
-  const secondHook = (opts) => {
-    hookCalled.push({ second: opts })
-  }
-
-  const interceptor = createThreadInterceptor({
-    domain: '.local',
-    onClientRequest: [firstHook, secondHook]
-  })
-  interceptor.route('myserver', worker)
-
-  const agent = new Agent().compose(interceptor)
-
-  const { statusCode } = await request('http://myserver.local', {
-    dispatcher: agent,
-  })
-
-  strictEqual(statusCode, 200)
-  deepStrictEqual(hookCalled, [
-    {
-      first: {
-        headers: {
-          host: 'myserver.local',
-        },
-        method: 'GET',
-        origin: 'http://myserver.local',
-        path: '/'
-      }
-    }, {
-      second: {
-        headers: {
-          host: 'myserver.local',
-        },
-        method: 'GET',
-        origin: 'http://myserver.local',
-        path: '/'
-      }
-    }
-  ])
-})
-
 test('hooks - onClientResponse', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
@@ -138,34 +104,6 @@ test('hooks - onClientResponse', async (t) => {
 
   strictEqual(statusCode, 200)
   deepStrictEqual(hookCalled, '{"hello":"world"}')
-})
-
-test('hooks - multiple onClientResponses', async (t) => {
-  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
-  t.after(() => worker.terminate())
-  const hookCalled = []
-
-  const onClientResponse1 = (_req, res) => {
-    hookCalled.push({ res1: Buffer.from(res.rawPayload).toString() })
-  }
-
-  const onClientResponse2 = (req, res) => {
-    hookCalled.push({ res2: Buffer.from(res.rawPayload).toString() })
-  }
-
-  const interceptor = createThreadInterceptor({
-    domain: '.local',
-    onClientResponse: [onClientResponse1, onClientResponse2]
-  })
-  interceptor.route('myserver', worker)
-
-  const agent = new Agent().compose(interceptor)
-  const { statusCode } = await request('http://myserver.local', {
-    dispatcher: agent,
-  })
-
-  strictEqual(statusCode, 200)
-  deepStrictEqual(hookCalled, [{ res1: '{"hello":"world"}' }, { res2: '{"hello":"world"}' }])
 })
 
 test('hooks - onClientError', async (t) => {
@@ -190,37 +128,6 @@ test('hooks - onClientError', async (t) => {
   } catch (err) {
     strictEqual(err.message, 'kaboom')
     deepStrictEqual(hookCalled.message, 'kaboom')
-  }
-})
-
-test('hooks - multiple onClientErrors', async (t) => {
-  const worker = new Worker(join(__dirname, 'fixtures', 'error.js'))
-  t.after(() => worker.terminate())
-  const hookCalled = []
-
-  const onClientError1 = (_req, _rep, _ctx, error) => {
-    hookCalled.push({ error1: error.message })
-  }
-
-  const onClientError2 = (_req, _rep, _ctx, error) => {
-    hookCalled.push({ error2: error.message })
-  }
-
-  const interceptor = createThreadInterceptor({
-    domain: '.local',
-    onClientError: [onClientError1, onClientError2]
-  })
-  interceptor.route('myserver', worker)
-
-  try {
-    const agent = new Agent().compose(interceptor)
-    await request('http://myserver.local', {
-      dispatcher: agent,
-    })
-    throw new Error('should not be here')
-  } catch (err) {
-    strictEqual(err.message, 'kaboom')
-    deepStrictEqual(hookCalled, [{ error1: 'kaboom' }, { error2: 'kaboom' }])
   }
 })
 
