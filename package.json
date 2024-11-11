@@ -1,6 +1,6 @@
 {
   "name": "undici-thread-interceptor",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "An Undici interceptor that routes requests over a worker thread",
   "main": "index.js",
   "scripts": {
