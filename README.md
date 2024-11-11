@@ -165,7 +165,7 @@ It's possible to set some simple **synchronous** functions as hooks:
 The `clientCtx` is used to pass through hooks calls objects which cannot be set on request
 (which is then sent through `postMessage`, so it might be not serializable).
 
-On `onServerRequest`, the `cb` is not supposed to be called by the hook, but the hook can
+On `onServerRequest`, the `cb` is not supposed to be called by the hooks, but they can
 wrap/decorate it.
 
 #### Client hooks
