@@ -263,55 +263,57 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         query: opts.query,
         body: opts.body instanceof Uint8Array ? Buffer.from(opts.body) : opts.body,
       }
-      interceptor.hooks.fireOnServerRequest(injectOpts)
+      // the cb is always fired even if there are no server request hooks set
+      interceptor.hooks.fireOnServerRequest(injectOpts, () => {
+        const onInject = (err, res) => {
+          if (err) {
+            interceptor.hooks.fireOnServerError(injectOpts, res, err)
+            port.postMessage({ type: 'response', id, err })
+            return
+          }
 
-      const onInject = (err, res) => {
-        if (err) {
-          interceptor.hooks.fireOnServerError(injectOpts, res, err)
-          port.postMessage({ type: 'response', id, err })
+          const newRes = {
+            headers: res.headers,
+            statusCode: res.statusCode,
+          }
+
+          if (res.headers['content-type']?.indexOf('application/json')) {
+          // fast path because it's utf-8, use a string
+            newRes.rawPayload = res.payload
+          } else {
+          // slow path, buffer
+            newRes.rawPayload = res.rawPayload
+          }
+
+          const forwardRes = {
+            type: 'response',
+            id,
+            res: newRes,
+          }
+
+          interceptor.hooks.fireOnServerResponse(injectOpts, newRes)
+
+          // So we route the message back to the port
+          // that sent the request
+          this.postMessage(forwardRes)
+        }
+
+        if (!server) {
+          port.postMessage({
+            type: 'response',
+            id,
+            err: new Error('No server found for ' + injectOpts.headers.host + ' in ' + threadId),
+          })
+
           return
         }
 
-        const newRes = {
-          headers: res.headers,
-          statusCode: res.statusCode,
-        }
-
-        if (res.headers['content-type']?.indexOf('application/json')) {
-          // fast path because it's utf-8, use a string
-          newRes.rawPayload = res.payload
+        if (hasInject) {
+          server.inject(injectOpts, onInject)
         } else {
-          // slow path, buffer
-          newRes.rawPayload = res.rawPayload
+          inject(server, injectOpts, onInject)
         }
-
-        const forwardRes = {
-          type: 'response',
-          id,
-          res: newRes,
-        }
-        interceptor.hooks.fireOnServerResponse(injectOpts, newRes)
-
-        // So we route the message back to the port
-        // that sent the request
-        this.postMessage(forwardRes)
-      }
-
-      if (!server) {
-        port.postMessage({
-          type: 'response',
-          id,
-          err: new Error('No server found for ' + injectOpts.headers.host + ' in ' + threadId),
-        })
-
-        return
-      }
-
-      if (hasInject) {
-        server.inject(injectOpts, onInject)
-      } else {
-        inject(server, injectOpts, onInject)
-      }
+      })
     } else if (msg.type === 'route') {
       interceptor.route(msg.url, msg.port, false)
       msg.port.on('message', onMessage)
