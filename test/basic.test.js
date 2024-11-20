@@ -9,6 +9,7 @@ const { once } = require('node:events')
 const { setTimeout: sleep } = require('node:timers/promises')
 const { createThreadInterceptor } = require('../')
 const { Agent, request } = require('undici')
+const { readFile } = require('node:fs').promises
 const Fastify = require('fastify')
 
 test('basic', async (t) => {
@@ -366,4 +367,27 @@ test('POST with Stream', async (t) => {
 
   strictEqual(statusCode, 200)
   deepStrictEqual(await body.json(), { hello: 'world' })
+})
+
+test('Get binary file', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode, body } = await request('http://myserver.local/public/test.ttf', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  const read = Buffer.from(await body.arrayBuffer())
+
+  const expected = await readFile(join(__dirname, 'fixtures', 'public', 'test.ttf'))
+
+  deepStrictEqual(read, expected)
 })
