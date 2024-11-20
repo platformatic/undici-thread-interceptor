@@ -4,8 +4,15 @@ const { Readable } = require('stream')
 const { parentPort, workerData, threadId } = require('worker_threads')
 const fastify = require('fastify')
 const { wire } = require('../../')
+const fastifyStatic = require('@fastify/static')
+const { join } = require('path')
 
 const app = fastify()
+
+app.register(fastifyStatic, {
+  root: join(__dirname, 'public'),
+  prefix: '/public',
+})
 
 app.get('/', (req, reply) => {
   reply.send({ hello: workerData?.message || 'world' })

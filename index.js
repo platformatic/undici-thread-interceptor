@@ -276,7 +276,8 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
             statusCode: res.statusCode,
           }
 
-          if (res.headers['content-type']?.indexOf('application/json')) {
+          if (res.headers['content-type']?.indexOf('application/json') === 0) {
+          // TODO(mcollina): maybe use a fast path also for HTML
           // fast path because it's utf-8, use a string
             newRes.rawPayload = res.payload
           } else {
