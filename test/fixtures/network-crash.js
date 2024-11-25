@@ -17,6 +17,5 @@ app.get('/crash', async (request, reply) => {
 // TODO(mcollina): there is a race condition here
 const { replaceServer } = wire({ port: parentPort })
 app.listen({ port: 0 }).then((url) => {
-  process._rawDebug('server started on', url)
   replaceServer(url)
 })

@@ -42,6 +42,7 @@ function createThreadInterceptor (opts) {
       const port = roundRobin.next()
 
       if (port[kAddress]) {
+
         return dispatch({ ...opts, origin: port[kAddress] }, handler)
       }
 
@@ -201,10 +202,17 @@ function createThreadInterceptor (opts) {
           inflight(err, res)
         }
       } else if (msg.type === 'address') {
-        // TODO(mcollina): verify the else clause
         if (!msg.url) {
           const roundRobinIndex = roundRobin.findIndex(port)
           res.setAddress(url, roundRobinIndex, msg.address, forward)
+        } else {
+          const roundRobin = routes.get(msg.url)
+          if (!roundRobin) {
+            return
+          }
+
+          const roundRobinIndex = roundRobin.findIndex(port)
+          res.setAddress(msg.url, roundRobinIndex, msg.address, false)
         }
       }
     })
