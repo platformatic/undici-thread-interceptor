@@ -153,8 +153,8 @@ function createThreadInterceptor (opts) {
           const { port1, port2 } = new MessageChannel()
           forwarded.get(otherPort).add(port2)
           forwarded.get(port).add(port1)
-          otherPort.postMessage({ type: 'route', url, port: port2 }, [port2])
-          port.postMessage({ type: 'route', url: key, port: port1 }, [port1])
+          otherPort.postMessage({ type: 'route', url, port: port2, threadId: port.threadId }, [port2])
+          port.postMessage({ type: 'route', url: key, port: port1, threadId: otherPort.threadId }, [port1])
         }
       }
     }
@@ -163,7 +163,12 @@ function createThreadInterceptor (opts) {
       routes.set(url, new RoundRobin())
     }
 
-    const roundRobinIndex = routes.get(url).add(port)
+    const roundRobin = routes.get(url)
+    roundRobin.add(port)
+
+    // We must copy the threadId outsise because it can be nulled
+    // by Node.js
+    const threadId = port.threadId
 
     function onClose () {
       const roundRobin = routes.get(url)
@@ -180,7 +185,7 @@ function createThreadInterceptor (opts) {
       }
 
       // Notify other threads that any eventual network address for this route is no longer valid
-      res.setAddress(url, roundRobinIndex)
+      res.setAddress(url, threadId)
     }
 
     // If port is a worker, we need to remove it from the routes
@@ -199,13 +204,22 @@ function createThreadInterceptor (opts) {
           inflight(err, res)
         }
       } else if (msg.type === 'address') {
-        res.setAddress(url, roundRobinIndex, msg.address, forward)
+        if (!msg.url) {
+          res.setAddress(url, port.threadId, msg.address, forward)
+        } else {
+          const roundRobin = routes.get(msg.url)
+          if (!roundRobin) {
+            return
+          }
+
+          res.setAddress(msg.url, msg.threadId, msg.address, false)
+        }
       }
     })
   }
 
-  res.setAddress = (url, index, address, forward = true) => {
-    const port = routes.get(url)?.get(index)
+  res.setAddress = (url, threadId, address, forward = true) => {
+    const port = routes.get(url)?.findByThreadId(threadId)
 
     if (port) {
       port[kAddress] = address
@@ -217,7 +231,10 @@ function createThreadInterceptor (opts) {
 
     for (const [, roundRobin] of routes) {
       for (const otherPort of roundRobin) {
-        otherPort.postMessage({ type: 'address', url, index, address })
+        // Avoid loops, do not send the message to the source
+        if (otherPort.threadId !== threadId) {
+          otherPort.postMessage({ type: 'address', url, address, threadId })
+        }
       }
     }
   }
@@ -246,7 +263,7 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
     server = newServer
 
     if (typeof server === 'string') {
-      parentPort.postMessage({ type: 'address', address: server })
+      parentPort.postMessage({ type: 'address', address: server, threadId })
     } else {
       hasInject = typeof server?.inject === 'function'
     }
@@ -315,10 +332,11 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         }
       })
     } else if (msg.type === 'route') {
+      msg.port.threadId = msg.threadId
       interceptor.route(msg.url, msg.port, false)
       msg.port.on('message', onMessage)
     } else if (msg.type === 'address') {
-      interceptor.setAddress(msg.url, msg.index, msg.address, false)
+      interceptor.setAddress(msg.url, msg.threadId, msg.address, false)
     }
   }
 
