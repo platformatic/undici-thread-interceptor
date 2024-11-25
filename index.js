@@ -42,7 +42,6 @@ function createThreadInterceptor (opts) {
       const port = roundRobin.next()
 
       if (port[kAddress]) {
-
         return dispatch({ ...opts, origin: port[kAddress] }, handler)
       }
 
