@@ -1,7 +1,6 @@
 'use strict'
 
 const RoundRobin = require('./lib/roundrobin')
-const { workerData } = require('worker_threads')
 const hyperid = require('hyperid')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('undici')
 const { threadId, MessageChannel, parentPort } = require('worker_threads')
