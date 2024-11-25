@@ -74,7 +74,7 @@ test('service restart with network / 1', async (t) => {
   }
 })
 
-test.only('service restart with network / 2', async (t) => {
+test('service restart with network / 2', async (t) => {
   const composer = new Worker(join(__dirname, 'fixtures', 'composer.js'), {
     workerData: { name: 'composer' },
   })
