@@ -163,9 +163,11 @@ function createThreadInterceptor (opts) {
       routes.set(url, new RoundRobin())
     }
 
-    const roundRobinIndex = routes.get(url).add(port)
+    const roundRobin = routes.get(url)
+    roundRobin.add(port)
 
     function onClose () {
+      const roundRobinIndex = routes.get(url).findIndex(port)
       const roundRobin = routes.get(url)
       roundRobin.remove(port)
       for (const f of forwarded.get(port)) {
@@ -199,12 +201,18 @@ function createThreadInterceptor (opts) {
           inflight(err, res)
         }
       } else if (msg.type === 'address') {
+        const roundRobinIndex = roundRobin.findIndex(port)
         res.setAddress(url, roundRobinIndex, msg.address, forward)
       }
     })
   }
 
   res.setAddress = (url, index, address, forward = true) => {
+    /*
+    if (!address) {
+      throw new Error('address is required')
+    }
+    */
     const port = routes.get(url)?.get(index)
 
     if (port) {
@@ -217,6 +225,7 @@ function createThreadInterceptor (opts) {
 
     for (const [, roundRobin] of routes) {
       for (const otherPort of roundRobin) {
+        process._rawDebug('sending address', address, 'to', otherPort.threadId, 'for', url)
         otherPort.postMessage({ type: 'address', url, index, address })
       }
     }
