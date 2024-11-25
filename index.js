@@ -197,7 +197,6 @@ function createThreadInterceptor (opts) {
     const inflights = new Map()
     portInflights.set(port, inflights)
     port.on('message', (msg) => {
-      process._rawDebug(workerData?.main || 'main', 'portOnMessage', url, msg)
       if (msg.type === 'response') {
         const { id, res, err } = msg
         const inflight = inflights.get(id)
@@ -265,7 +264,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
     server = newServer
 
     if (typeof server === 'string') {
-      process._rawDebug(workerData?.name || 'main', 'replaceServer', server)
       parentPort.postMessage({ type: 'address', address: server, threadId })
     } else {
       hasInject = typeof server?.inject === 'function'
@@ -273,7 +271,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
   }
 
   function onMessage (msg) {
-    process._rawDebug(workerData?.name || 'main', msg)
     if (msg.type === 'request') {
       const { id, opts } = msg
 
