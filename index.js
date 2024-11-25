@@ -2,7 +2,6 @@
 
 const RoundRobin = require('./lib/roundrobin')
 const hyperid = require('hyperid')
-const { workerData } = require('worker_threads')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('undici')
 const { threadId, MessageChannel, parentPort } = require('worker_threads')
 const inject = require('light-my-request')
@@ -43,7 +42,6 @@ function createThreadInterceptor (opts) {
       const port = roundRobin.next()
 
       if (port[kAddress]) {
-
         return dispatch({ ...opts, origin: port[kAddress] }, handler)
       }
 
@@ -195,8 +193,6 @@ function createThreadInterceptor (opts) {
     const inflights = new Map()
     portInflights.set(port, inflights)
     port.on('message', (msg) => {
-        process._rawDebug('==== start')
-        process._rawDebug(workerData?.name || 'main', 'otherMessage', msg)
       if (msg.type === 'response') {
         const { id, res, err } = msg
         const inflight = inflights.get(id)
@@ -211,23 +207,10 @@ function createThreadInterceptor (opts) {
           res.setAddress(url, roundRobinIndex, msg.address, forward)
         }
       }
-        process._rawDebug('==== end')
     })
   }
 
   res.setAddress = (url, index, address, forward = true) => {
-    process._rawDebug(workerData?.name || 'main', 'setAddress', url, index, address, forward, new Error().stack)
-    process._rawDebug(workerData?.name || 'main', 'routes', Array.from(routes.entries()).map((e) => {
-      const key = e[0]
-      const value = e[1]
-      return { key, addresses: value.ports.map(p => p[kAddress]) } 
-    }));
-
-    /*
-    if (!address) {
-      throw new Error('address is required')
-    }
-    */
     const port = routes.get(url)?.get(index)
 
     if (port) {
@@ -240,7 +223,6 @@ function createThreadInterceptor (opts) {
 
     for (const [, roundRobin] of routes) {
       for (const otherPort of roundRobin) {
-        process._rawDebug(workerData?.name || 'main', 'sending address', address, 'to', otherPort.threadId, 'for', url)
         otherPort.postMessage({ type: 'address', url, index, address })
       }
     }
@@ -267,7 +249,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
   replaceServer(newServer)
 
   function replaceServer (newServer) {
-    process._rawDebug(workerData?.name || 'main', 'replacing server', server, 'with', newServer)
     server = newServer
 
     if (typeof server === 'string') {
@@ -278,8 +259,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
   }
 
   function onMessage (msg) {
-    process._rawDebug('-----')
-    process._rawDebug(workerData?.name, 'received', msg)
     if (msg.type === 'request') {
       const { id, opts } = msg
 
@@ -335,15 +314,10 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
           return
         }
 
-        try {
-          if (hasInject) {
-            server.inject(injectOpts, onInject)
-          } else {
-            inject(server, injectOpts, onInject)
-          }
-        }  catch (err) {
-          process._rawDebug(workerData?.name || 'main', 'error', err)
-          throw err
+        if (hasInject) {
+          server.inject(injectOpts, onInject)
+        } else {
+          inject(server, injectOpts, onInject)
         }
       })
     } else if (msg.type === 'route') {
@@ -352,7 +326,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
     } else if (msg.type === 'address') {
       interceptor.setAddress(msg.url, msg.index, msg.address, false)
     }
-    process._rawDebug('-----')
   }
 
   port.on('message', onMessage)

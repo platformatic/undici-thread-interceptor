@@ -44,13 +44,9 @@ test('service restart with network / 1', async (t) => {
     await res.body.dump()
   }
 
-  console.log('all successful request completed')
-
   await rejects(request('http://myserver2.local/crash', {
     dispatcher: agent,
   }))
-
-  console.log('service crashed')
 
   const worker2bis = new Worker(join(__dirname, 'fixtures', 'network-crash.js'))
   t.after(() => worker2bis.terminate())
@@ -58,8 +54,6 @@ test('service restart with network / 1', async (t) => {
   interceptor.route('myserver2', worker2bis)
 
   await sleep(2000)
-
-  console.log('calling worker1')
 
   {
     const res = await request('http://myserver.local/example', {
@@ -69,8 +63,6 @@ test('service restart with network / 1', async (t) => {
     strictEqual(res.statusCode, 200)
     await res.body.dump()
   }
-
-  console.log('calling worker2bis')
 
   {
     const res = await request('http://myserver2.local/example', {
@@ -84,15 +76,15 @@ test('service restart with network / 1', async (t) => {
 
 test.only('service restart with network / 2', async (t) => {
   const composer = new Worker(join(__dirname, 'fixtures', 'composer.js'), {
-    workerData: { name: 'composer'},
+    workerData: { name: 'composer' },
   })
   t.after(() => composer.terminate())
   const worker1 = new Worker(join(__dirname, 'fixtures', 'network-crash.js'), {
-    workerData: { name: 'worker1'},
+    workerData: { name: 'worker1' },
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'network-crash.js'), {
-    workerData: { name: 'worker2'},
+    workerData: { name: 'worker2' },
   })
   t.after(() => worker2.terminate())
 
@@ -107,7 +99,6 @@ test.only('service restart with network / 2', async (t) => {
 
   await sleep(1000)
 
-  /*
   {
     const res = await request('http://composer.local/s1/example', {
       dispatcher: agent,
@@ -126,10 +117,7 @@ test.only('service restart with network / 2', async (t) => {
     await res.body.dump()
   }
 
-  console.log('===> all successful request completed')
-  */
-
-  { 
+  {
     const res = await request('http://composer.local/s2/crash', {
       dispatcher: agent,
     })
@@ -137,18 +125,14 @@ test.only('service restart with network / 2', async (t) => {
     await res.body.dump()
   }
 
-  console.log('===> service crashed')
-
   const worker2bis = new Worker(join(__dirname, 'fixtures', 'network-crash.js'), {
-    workerData: { name: 'worker2bis'},
+    workerData: { name: 'worker2bis' },
   })
   t.after(() => worker2bis.terminate())
 
   interceptor.route('myserver2', worker2bis)
 
   await sleep(2000)
-
-  console.log('calling worker1')
 
   {
     const res = await request('http://composer.local/s1/example', {
@@ -158,8 +142,6 @@ test.only('service restart with network / 2', async (t) => {
     strictEqual(res.statusCode, 200)
     await res.body.dump()
   }
-
-  console.log('calling worker2bis')
 
   {
     const res = await request('http://composer.local/s2/example', {
