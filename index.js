@@ -210,8 +210,7 @@ function createThreadInterceptor (opts) {
             return
           }
 
-          const roundRobinIndex = roundRobin.findIndex(port)
-          res.setAddress(msg.url, roundRobinIndex, msg.address, false)
+          res.setAddress(msg.url, msg.index, msg.address, false)
         }
       }
     })
