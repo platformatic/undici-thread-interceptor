@@ -238,25 +238,26 @@ test('unwanted headers are removed', async (t) => {
   })
 })
 
-// test('multiple headers', async (t) => {
-//   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
-//   t.after(() => worker.terminate())
+// TODO: enable this test when undici v7 adds support for multiple headers
+test('multiple headers', { skip: true }, async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
 
-//   const interceptor = createThreadInterceptor({
-//     domain: '.local',
-//   })
-//   interceptor.route('myserver', worker)
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
 
-//   const agent = new Agent().compose(interceptor)
+  const agent = new Agent().compose(interceptor)
 
-//   const { statusCode, body, headers } = await request('http://myserver.local/headers', {
-//     dispatcher: agent,
-//   })
+  const { statusCode, body, headers } = await request('http://myserver.local/headers', {
+    dispatcher: agent,
+  })
 
-//   strictEqual(statusCode, 200)
-//   deepStrictEqual(headers['x-foo'], ['bar', 'baz'])
-//   await body.json()
-// })
+  strictEqual(statusCode, 200)
+  deepStrictEqual(headers['x-foo'], ['bar', 'baz'])
+  await body.json()
+})
 
 test('case-insensitive hostnames', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
