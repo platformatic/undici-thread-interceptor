@@ -6,6 +6,7 @@ const { getGlobalDispatcher, setGlobalDispatcher } = require('undici')
 const { threadId, MessageChannel, parentPort } = require('worker_threads')
 const inject = require('light-my-request')
 const Hooks = require('./lib/hooks')
+const DispatchController = require('./lib/dispatch-controller')
 
 const kAddress = Symbol('undici-thread-interceptor.address')
 
@@ -61,6 +62,8 @@ function createThreadInterceptor (opts) {
 
       delete newOpts.dispatcher
 
+      const controller = new DispatchController()
+
       // We use it as client context where hooks can add non-serializable properties
       const clientCtx = {}
       hooks.fireOnClientRequest(newOpts, clientCtx)
@@ -71,7 +74,7 @@ function createThreadInterceptor (opts) {
         }, (err) => {
           clearTimeout(handle)
           hooks.fireOnClientError(newOpts, null, err)
-          handler.onError(err)
+          handler.onResponseError(controller, err)
         })
       } else {
         port.postMessage({ type: 'request', id, opts: newOpts, threadId })
@@ -83,7 +86,8 @@ function createThreadInterceptor (opts) {
       if (typeof timeout === 'number') {
         handle = setTimeout(() => {
           inflights.delete(id)
-          handler.onError(new Error(`Timeout while waiting from a response from ${url.hostname}`))
+          const err = new Error(`Timeout while waiting from a response from ${url.hostname}`)
+          handler.onResponseError(controller, err)
         }, timeout)
       }
 
@@ -92,35 +96,23 @@ function createThreadInterceptor (opts) {
 
         if (err) {
           hooks.fireOnClientError(newOpts, res, clientCtx, err)
-          handler.onError(err)
+          handler.onResponseError(controller, err)
           return
         }
         hooks.fireOnClientResponse(newOpts, res, clientCtx)
 
-        const headers = []
-        for (const [key, value] of Object.entries(res.headers)) {
-          if (Array.isArray(value)) {
-            for (const v of value) {
-              headers.push(key)
-              headers.push(v)
-            }
-          } else {
-            headers.push(key)
-            headers.push(value)
-          }
-        }
-
-        let aborted = false
-        handler.onConnect((err) => {
-          if (err) {
-            handler.onError(err)
-          }
-          aborted = true
-        }, {})
-        handler.onHeaders(res.statusCode, headers, () => {}, res.statusMessage)
-        if (!aborted) {
-          handler.onData(res.rawPayload)
-          handler.onComplete([])
+        handler.onRequestStart(controller, {})
+        handler.onResponseStart(
+          controller,
+          res.statusCode,
+          res.statusMessage,
+          res.headers
+        )
+        if (!controller.aborted) {
+          handler.onResponseData(controller, res.rawPayload)
+          handler.onResponseEnd(controller, [])
+        } else {
+          handler.onResponseError(controller, controller.reason)
         }
       })
 
