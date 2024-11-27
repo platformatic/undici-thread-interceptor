@@ -104,13 +104,19 @@ function createThreadInterceptor (opts) {
         }
         hooks.fireOnClientResponse(newOpts, res, clientCtx)
 
-        handler.onRequestStart(controller, {})
-        handler.onResponseStart(
-          controller,
-          res.statusCode,
-          res.statusMessage,
-          res.headers ?? {}
-        )
+        try {
+          handler.onRequestStart(controller, {})
+          handler.onResponseStart(
+            controller,
+            res.statusCode,
+            res.headers,
+            res.statusMessage
+          )
+        } catch (err) {
+          handler.onResponseError(controller, err)
+          return
+        }
+
         if (!controller.aborted) {
           handler.onResponseData(controller, res.rawPayload)
           handler.onResponseEnd(controller, [])
