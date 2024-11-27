@@ -8,7 +8,7 @@ const { deepStrictEqual, strictEqual } = require('node:assert')
 const { join } = require('node:path')
 const { Worker } = require('node:worker_threads')
 const { createThreadInterceptor } = require('../')
-const { Agent, getGlobalDispatcher, request } = require('undici')
+const { Agent, getGlobalDispatcher, interceptors, request } = require('undici')
 
 class TestHandler {
   #handler
@@ -104,4 +104,41 @@ test('support undici v6 handler interface', async (t) => {
 
   strictEqual(statusCode, 200)
   deepStrictEqual(await body.json(), { hello: 'world' })
+})
+
+test('503 status code re-tries it with undici v6 GD', async (t) => {
+  const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
+    workerData: {
+      message: 'mesh',
+      whoamiReturn503: true,
+    },
+  })
+  t.after(() => worker1.terminate())
+  const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker2.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', [worker1, worker2])
+
+  const agent = getGlobalDispatcher().compose(interceptor, interceptors.retry())
+
+  {
+    const { body, statusCode } = await request('http://myserver.local/whoami', {
+      dispatcher: agent,
+    })
+
+    strictEqual(statusCode, 200)
+    deepStrictEqual(await body.json(), { threadId: worker2.threadId })
+  }
+
+  {
+    const { body, statusCode } = await request('http://myserver.local/whoami', {
+      dispatcher: agent,
+    })
+
+    strictEqual(statusCode, 200)
+    deepStrictEqual(await body.json(), { threadId: worker2.threadId })
+  }
 })
