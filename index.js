@@ -106,6 +106,10 @@ function createThreadInterceptor (opts) {
 
         try {
           handler.onRequestStart(controller, {})
+          if (controller.aborted) {
+            handler.onResponseError(controller, controller.reason)
+            return
+          }
           handler.onResponseStart(
             controller,
             res.statusCode,
@@ -117,12 +121,8 @@ function createThreadInterceptor (opts) {
           return
         }
 
-        if (!controller.aborted) {
-          handler.onResponseData(controller, res.rawPayload)
-          handler.onResponseEnd(controller, [])
-        } else {
-          handler.onResponseError(controller, controller.reason)
-        }
+        handler.onResponseData(controller, res.rawPayload)
+        handler.onResponseEnd(controller, [])
       })
 
       return true

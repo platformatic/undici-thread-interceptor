@@ -6,6 +6,7 @@ const fastify = require('fastify')
 const { wire } = require('../../')
 const fastifyStatic = require('@fastify/static')
 const { join } = require('path')
+const { setTimeout: sleep } = require('timers/promises')
 
 const app = fastify()
 
@@ -45,6 +46,11 @@ app.get('/no-headers', (req, reply) => {
 
 app.post('/echo-body', (req, reply) => {
   reply.send(req.body)
+})
+
+app.get('/long', async (req, reply) => {
+  await sleep(1000)
+  return { hello: 'world' }
 })
 
 wire({ server: app, port: parentPort })
