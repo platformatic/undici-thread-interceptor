@@ -109,7 +109,7 @@ function createThreadInterceptor (opts) {
           controller,
           res.statusCode,
           res.statusMessage,
-          res.headers
+          res.headers ?? {}
         )
         if (!controller.aborted) {
           handler.onResponseData(controller, res.rawPayload)
