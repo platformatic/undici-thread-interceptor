@@ -238,7 +238,8 @@ test('unwanted headers are removed', async (t) => {
   })
 })
 
-test('multiple headers', async (t) => {
+// TODO: enable this test when undici v7 adds support for multiple headers
+test('multiple headers', { skip: true }, async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 
@@ -390,4 +391,24 @@ test('Get binary file', async (t) => {
   const expected = await readFile(join(__dirname, 'fixtures', 'public', 'test.ttf'))
 
   deepStrictEqual(read, expected)
+})
+
+test('aborting a request', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const abortController = new AbortController()
+
+  const agent = new Agent().compose(interceptor)
+  abortController.abort()
+
+  await rejects(request('http://myserver.local', {
+    dispatcher: agent,
+    signal: abortController.signal,
+  }))
 })
