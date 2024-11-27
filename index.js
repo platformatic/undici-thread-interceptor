@@ -118,7 +118,7 @@ function createThreadInterceptor (opts) {
           )
           // TODO(mcollina): I don't think this can be triggered,
           // but we should consider adding a test for this in the future
-          /* c8 ignore next 3 */
+          /* c8 ignore next 4 */
           if (controller.aborted) {
             handler.onResponseError(controller, controller.reason)
             return
