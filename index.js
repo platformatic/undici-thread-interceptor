@@ -7,6 +7,7 @@ const { threadId, MessageChannel, parentPort } = require('worker_threads')
 const inject = require('light-my-request')
 const Hooks = require('./lib/hooks')
 const DispatchController = require('./lib/dispatch-controller')
+const WrapHandler = require('./lib/wrap-handler')
 
 const kAddress = Symbol('undici-thread-interceptor.address')
 
@@ -29,6 +30,8 @@ function createThreadInterceptor (opts) {
       if (!(url instanceof URL)) {
         url = new URL(opts.path, url)
       }
+
+      handler = handler.onRequestStart ? handler : new WrapHandler(handler)
 
       // Hostnames are case-insensitive
       const roundRobin = routes.get(url.hostname.toLowerCase())
