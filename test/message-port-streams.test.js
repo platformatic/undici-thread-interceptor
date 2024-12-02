@@ -69,3 +69,51 @@ test('writev', async (t) => {
 
   await exited
 })
+
+test('producer error', async (t) => {
+  const channel = new MessageChannel()
+  const readable = new MessagePortReadable({
+    port: channel.port1
+  })
+
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'producer-error.js'), {
+    workerData: { port: channel.port2 },
+    transferList: [channel.port2]
+  })
+
+  let closeEmitted = false
+  readable.on('close', () => {
+    closeEmitted = true
+  })
+
+  const exited = once(worker, 'exit')
+
+  const [err] = await once(readable, 'error')
+  t.assert.equal(err.message, 'kaboom')
+  t.assert.equal(closeEmitted, true)
+
+  await exited
+})
+
+test('consumer error', async (t) => {
+  const channel = new MessageChannel()
+
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'consumer-error.js'), {
+    workerData: { port: channel.port1 },
+    transferList: [channel.port1]
+  })
+  const writable = new MessagePortWritable({ port: channel.port2, worker })
+
+  let closeEmitted = false
+  writable.on('close', () => {
+    closeEmitted = true
+  })
+
+  const exited = once(worker, 'exit')
+
+  const [err] = await once(writable, 'error')
+  t.assert.equal(err.message, 'kaboom')
+  t.assert.equal(closeEmitted, true)
+
+  await exited
+})
