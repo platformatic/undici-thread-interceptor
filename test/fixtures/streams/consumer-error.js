@@ -1,6 +1,6 @@
 'use strict'
 
-const { workerData, parentPort } = require('node:worker_threads')
+const { workerData } = require('node:worker_threads')
 const { MessagePortReadable } = require('../../../lib/message-port-streams')
 
 const readable = new MessagePortReadable({

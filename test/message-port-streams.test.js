@@ -3,7 +3,7 @@
 const { test } = require('node:test')
 const { join } = require('node:path')
 const { Worker, MessageChannel } = require('node:worker_threads')
-const { MessagePortWritable, MessagePortReadable  } = require('../lib/message-port-streams')
+const { MessagePortWritable, MessagePortReadable } = require('../lib/message-port-streams')
 const { once } = require('node:events')
 
 test('producer to consumer', async (t) => {
