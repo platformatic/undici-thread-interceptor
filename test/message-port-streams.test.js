@@ -117,3 +117,47 @@ test('consumer error', async (t) => {
 
   await exited
 })
+
+test('readable crash', async (t) => {
+  const channel = new MessageChannel()
+
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'crash.js'), {
+    workerData: { port: channel.port2 },
+    transferList: [channel.port2]
+  })
+
+  const readable = new MessagePortReadable({
+    port: channel.port1
+  })
+
+  const exited = once(worker, 'exit').catch((err) => {
+    t.assert.strictEqual(err.message, 'kaboom')
+  })
+
+  const err = await once(readable, 'error')
+  t.assert.strictEqual(err[0].message, 'message port closed')
+
+  await exited
+})
+
+test('writable crash', async (t) => {
+  const channel = new MessageChannel()
+
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'crash.js'), {
+    workerData: { port: channel.port2 },
+    transferList: [channel.port2]
+  })
+
+  const writable = new MessagePortWritable({
+    port: channel.port1
+  })
+
+  const exited = once(worker, 'exit').catch((err) => {
+    t.assert.strictEqual(err.message, 'kaboom')
+  })
+
+  const err = await once(writable, 'error')
+  t.assert.strictEqual(err[0].message, 'message port closed')
+
+  await exited
+})
