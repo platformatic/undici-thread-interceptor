@@ -1,7 +1,6 @@
 'use strict'
 
-const { parentPort, workerData } = require('node:worker_threads')
-const { createServer } = require('node:http')
+const { parentPort } = require('node:worker_threads')
 const { wire } = require('../../')
 
 const app = (req, res) => {
