@@ -281,10 +281,18 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
     if (msg.type === 'request') {
       const { id, opts } = msg
 
+      const headers = {}
+
+      for (const [key, value] of Object.entries(opts.headers)) {
+        if (value !== undefined && value !== null) {
+          headers[key] = value
+        }
+      }
+
       const injectOpts = {
         method: opts.method,
         url: opts.path,
-        headers: opts.headers,
+        headers,
         query: opts.query,
         body: opts.body instanceof Uint8Array ? Buffer.from(opts.body) : opts.body,
       }
