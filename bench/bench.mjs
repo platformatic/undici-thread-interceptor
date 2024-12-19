@@ -14,12 +14,18 @@ interceptor.route('myserver', worker)
 
 const agent = new Agent().compose(interceptor)
 
+async function performRequest () {
+  const res = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  await res.body.text()
+}
+
 console.time('request')
 const responses = []
 for (let i = 0; i < 100000; i++) {
-  responses.push(request('http://myserver.local', {
-    dispatcher: agent,
-  }))
+  responses.push(performRequest())
 }
 await Promise.all(responses)
 console.timeEnd('request')
