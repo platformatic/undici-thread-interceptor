@@ -163,22 +163,6 @@ test('writable crash', async (t) => {
   await exited
 })
 
-test('MessagePortWritable.asTransferable(string, worker)', async (t) => {
-  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'consumer-transferable.js'))
-
-  const { port, transferList } = MessagePortWritable.asTransferable({
-    body: 'Hello, World!',
-    worker
-  })
-
-  worker.postMessage({ port }, transferList)
-
-  const [{ chunks }] = await once(worker, 'message')
-  t.assert.deepEqual(chunks, [Buffer.from('Hello, World!')])
-
-  await once(worker, 'exit')
-})
-
 test('MessagePortWritable.asTransferable(stream, worker)', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'consumer-transferable.js'))
 
@@ -191,22 +175,6 @@ test('MessagePortWritable.asTransferable(stream, worker)', async (t) => {
 
   const { port, transferList } = MessagePortWritable.asTransferable({
     body,
-    worker
-  })
-
-  worker.postMessage({ port }, transferList)
-
-  const [{ chunks }] = await once(worker, 'message')
-  t.assert.deepEqual(chunks, [Buffer.from('Hello, World!')])
-
-  await once(worker, 'exit')
-})
-
-test('MessagePortWritable.asTransferable(buffer, worker)', async (t) => {
-  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'consumer-transferable.js'))
-
-  const { port, transferList } = MessagePortWritable.asTransferable({
-    body: Buffer.from('Hello, World!'),
     worker
   })
 

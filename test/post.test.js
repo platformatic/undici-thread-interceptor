@@ -112,16 +112,6 @@ test('POST with buffer stream', async (t) => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-process.on('unhandledRejection', (err) => {
-  console.error('unhandledRejection', err)
-  process.exit(1)
-})
-
-process.on('uncaughtException', (err) => {
-  console.error('uncaughtException', err)
-  process.exit(1)
-})
-
 // Unskip when https://github.com/nodejs/node/pull/55270 is released
 test.skip('POST errors with streams of objects', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))

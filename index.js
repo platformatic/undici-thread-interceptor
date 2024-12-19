@@ -13,6 +13,8 @@ const { MessagePortWritable, MessagePortReadable } = require('./lib/message-port
 
 const kAddress = Symbol('undici-thread-interceptor.address')
 
+const MAX_BODY = 32 * 1024
+
 function createThreadInterceptor (opts) {
   const routes = new Map()
   const portInflights = new Map()
@@ -73,7 +75,7 @@ function createThreadInterceptor (opts) {
       const clientCtx = {}
       hooks.fireOnClientRequest(newOpts, clientCtx)
 
-      if (newOpts.body) {
+      if (typeof newOpts.body?.resume === 'function' || newOpts.body?.[Symbol.asyncIterator]) {
         const body = newOpts.body
         delete newOpts.body
         const transferable = MessagePortWritable.asTransferable({
@@ -134,32 +136,39 @@ function createThreadInterceptor (opts) {
           return
         }
 
-        const body = new MessagePortReadable({
-          // TODO(mcollina): add reference to worker/parent port here, otherwise we won't know if the other party is dead
-          port: res.port
-        })
+        if (res.port) {
+          const body = new MessagePortReadable({
+            // TODO(mcollina): add reference to worker/parent port here, otherwise we won't know if the other party is dead
+            port: res.port
+          })
 
-        controller.on('resume', () => {
-          body.resume()
-        })
+          controller.on('resume', () => {
+            body.resume()
+          })
 
-        // TODO(mcollina): this is missing a test
-        /* c8 ignore next 3 */
-        controller.on('pause', () => {
-          body.pause()
-        })
+          // TODO(mcollina): this is missing a test
+          /* c8 ignore next 3 */
+          controller.on('pause', () => {
+            body.pause()
+          })
 
-        body.on('data', (chunk) => {
-          handler.onResponseData(controller, chunk)
-        })
+          body.on('data', (chunk) => {
+            handler.onResponseData(controller, chunk)
+          })
 
-        body.on('end', () => {
+          body.on('end', () => {
+            handler.onResponseEnd(controller, [])
+          })
+
+          // TODO(mcollina): this is missing a test
+          /* c8 ignore next 3 */
+          body.on('error', (err) => {
+            handler.onResponseError(controller, err)
+          })
+        } else {
+          handler.onResponseData(controller, res.body)
           handler.onResponseEnd(controller, [])
-        })
-
-        body.on('error', (err) => {
-          handler.onResponseError(controller, err)
-        })
+        }
       }))
 
       return true
@@ -332,39 +341,64 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         url: opts.path,
         headers,
         query: opts.query,
-        body: bodyReadable,
+        body: opts.body || bodyReadable,
         payloadAsStream: true
       }
       interceptor.hooks.fireOnServerRequest(injectOpts, () => {
-        const onInject = (err, res) => {
+        const onInject = async (err, res) => {
           if (err) {
             interceptor.hooks.fireOnServerError(injectOpts, res, err)
             port.postMessage({ type: 'response', id, err })
             return
           }
 
-          const transferable = MessagePortWritable.asTransferable({
-            // TODO(mollina): add the parent port here, as we would need to have the worker instead
-            body: res.stream()
-          })
+          const length = res.headers['content-length']
+          const parsedLength = length === undefined ? MAX_BODY : Number(length)
 
-          const newRes = {
-            headers: res.headers,
-            statusCode: res.statusCode,
-            port: transferable.port,
-          }
+          let newRes
+          let forwardRes
+          let transferList
 
-          const forwardRes = {
-            type: 'response',
-            id,
-            res: newRes,
+          if (parsedLength < MAX_BODY) {
+            // TODO(mcollina): handle errors
+            const body = await collectBody(res.stream())
+
+            newRes = {
+              headers: res.headers,
+              statusCode: res.statusCode,
+              body
+            }
+
+            forwardRes = {
+              type: 'response',
+              id,
+              res: newRes,
+            }
+          } else {
+            const transferable = MessagePortWritable.asTransferable({
+              // TODO(mollina): add the parent port here, as we would need to have the worker instead
+              body: res.stream()
+            })
+            transferList = transferable.transferList
+
+            newRes = {
+              headers: res.headers,
+              statusCode: res.statusCode,
+              port: transferable.port,
+            }
+
+            forwardRes = {
+              type: 'response',
+              id,
+              res: newRes,
+            }
           }
 
           interceptor.hooks.fireOnServerResponse(injectOpts, newRes)
 
           // So we route the message back to the port
           // that sent the request
-          this.postMessage(forwardRes, transferable.transferList)
+          this.postMessage(forwardRes, transferList)
         }
 
         if (!server) {
@@ -394,6 +428,21 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
 
   port.on('message', onMessage)
   return { interceptor, replaceServer }
+}
+
+async function collectBody (stream) {
+  const data = []
+
+  for await (const chunk of stream) {
+    data.push(chunk)
+  }
+
+  /* c8 ignore next 7 */
+  if (data[0] instanceof Buffer || data[0] instanceof Uint8Array) {
+    return Buffer.concat(data)
+  } else {
+    throw new Error('Cannot transfer streams of strings or objects')
+  }
 }
 
 module.exports.createThreadInterceptor = createThreadInterceptor
