@@ -5,6 +5,7 @@ const { join } = require('node:path')
 const { Worker, MessageChannel } = require('node:worker_threads')
 const { MessagePortWritable, MessagePortReadable } = require('../lib/message-port-streams')
 const { once } = require('node:events')
+const { Readable } = require('node:stream')
 
 test('producer to consumer', async (t) => {
   const channel = new MessageChannel()
@@ -160,4 +161,59 @@ test('writable crash', async (t) => {
   t.assert.strictEqual(err[0].message, 'message port closed')
 
   await exited
+})
+
+test('MessagePortWritable.asTransferable(string, worker)', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'consumer-transferable.js'))
+
+  const { port, transferList } = MessagePortWritable.asTransferable({
+    body: 'Hello, World!',
+    worker
+  })
+
+  worker.postMessage({ port }, transferList)
+
+  const [{ chunks }] = await once(worker, 'message')
+  t.assert.deepEqual(chunks, [Buffer.from('Hello, World!')])
+
+  await once(worker, 'exit')
+})
+
+test('MessagePortWritable.asTransferable(stream, worker)', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'consumer-transferable.js'))
+
+  const body = new Readable({
+    read () {
+      this.push('Hello, World!')
+      this.push(null)
+    }
+  })
+
+  const { port, transferList } = MessagePortWritable.asTransferable({
+    body,
+    worker
+  })
+
+  worker.postMessage({ port }, transferList)
+
+  const [{ chunks }] = await once(worker, 'message')
+  t.assert.deepEqual(chunks, [Buffer.from('Hello, World!')])
+
+  await once(worker, 'exit')
+})
+
+test('MessagePortWritable.asTransferable(buffer, worker)', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'consumer-transferable.js'))
+
+  const { port, transferList } = MessagePortWritable.asTransferable({
+    body: Buffer.from('Hello, World!'),
+    worker
+  })
+
+  worker.postMessage({ port }, transferList)
+
+  const [{ chunks }] = await once(worker, 'message')
+  t.assert.deepEqual(chunks, [Buffer.from('Hello, World!')])
+
+  await once(worker, 'exit')
 })

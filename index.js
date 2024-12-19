@@ -8,6 +8,7 @@ const inject = require('light-my-request')
 const Hooks = require('./lib/hooks')
 const DispatchController = require('./lib/dispatch-controller')
 const WrapHandler = require('./lib/wrap-handler')
+const { MessagePortWritable, MessagePortReadable } = require('./lib/message-port-streams')
 
 const kAddress = Symbol('undici-thread-interceptor.address')
 
@@ -71,17 +72,19 @@ function createThreadInterceptor (opts) {
       const clientCtx = {}
       hooks.fireOnClientRequest(newOpts, clientCtx)
 
-      if (newOpts.body?.[Symbol.asyncIterator]) {
-        collectBodyAndDispatch(newOpts, handler).then(() => {
-          port.postMessage({ type: 'request', id, opts: newOpts, threadId })
-        }, (err) => {
-          clearTimeout(handle)
-          hooks.fireOnClientError(newOpts, null, err)
-          handler.onResponseError(controller, err)
+      if (newOpts.body) {
+        const body = newOpts.body
+        delete newOpts.body
+        const transferable = MessagePortWritable.asTransferable({
+          // TODO(mollina): add the parent port here, as we would need to have the worker instead
+          body
         })
+
+        port.postMessage({ type: 'request', id, opts: newOpts, port: transferable.port, threadId }, transferable.transferList)
       } else {
         port.postMessage({ type: 'request', id, opts: newOpts, threadId })
       }
+
       const inflights = portInflights.get(port)
 
       let handle
@@ -279,14 +282,22 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
 
   function onMessage (msg) {
     if (msg.type === 'request') {
-      const { id, opts } = msg
+      const { id, opts, port: bodyPort } = msg
+      let bodyReadable
+
+      if (bodyPort) {
+        bodyReadable = new MessagePortReadable({
+          // TODO(mcollina): add reference to worker/parent port here, otherwise we won't know if the other party is dead
+          port: bodyPort
+        })
+      }
 
       const injectOpts = {
         method: opts.method,
         url: opts.path,
         headers: opts.headers,
         query: opts.query,
-        body: opts.body instanceof Uint8Array ? Buffer.from(opts.body) : opts.body,
+        body: bodyReadable,
       }
       interceptor.hooks.fireOnServerRequest(injectOpts, () => {
         const onInject = (err, res) => {
@@ -350,22 +361,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
 
   port.on('message', onMessage)
   return { interceptor, replaceServer }
-}
-
-async function collectBodyAndDispatch (opts) {
-  const data = []
-
-  for await (const chunk of opts.body) {
-    data.push(chunk)
-  }
-
-  if (typeof data[0] === 'string') {
-    opts.body = data.join('')
-  } else if (data[0] instanceof Buffer || data[0] instanceof Uint8Array) {
-    opts.body = Buffer.concat(data)
-  } else {
-    throw new Error('Cannot transfer streams of objects')
-  }
 }
 
 module.exports.createThreadInterceptor = createThreadInterceptor
