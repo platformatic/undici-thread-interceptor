@@ -12,7 +12,7 @@ const { Agent, request } = require('undici')
 const { readFile } = require('node:fs').promises
 const Fastify = require('fastify')
 
-test.only('basic', async (t) => {
+test('basic', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 
@@ -411,4 +411,24 @@ test('aborting a request', async (t) => {
     dispatcher: agent,
     signal: abortController.signal,
   }))
+})
+
+test('empty header', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'empty-headers.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode, body } = await request('http://myserver.local', {
+    dispatcher: agent,
+    headers: { foo: undefined }
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(await body.text(), 'hello world')
 })

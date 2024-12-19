@@ -1,5 +1,6 @@
 'use strict'
 
+const { AsyncResource } = require('node:async_hooks')
 const RoundRobin = require('./lib/roundrobin')
 const hyperid = require('hyperid')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('undici')
@@ -97,7 +98,7 @@ function createThreadInterceptor (opts) {
         }, timeout)
       }
 
-      inflights.set(id, (err, res) => {
+      inflights.set(id, AsyncResource.bind((err, res) => {
         clearTimeout(handle)
 
         if (err) {
@@ -159,7 +160,7 @@ function createThreadInterceptor (opts) {
         body.on('error', (err) => {
           handler.onResponseError(controller, err)
         })
-      })
+      }))
 
       return true
     }
@@ -318,10 +319,18 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         })
       }
 
+      const headers = {}
+
+      for (const [key, value] of Object.entries(opts.headers)) {
+        if (value !== undefined && value !== null) {
+          headers[key] = value
+        }
+      }
+
       const injectOpts = {
         method: opts.method,
         url: opts.path,
-        headers: opts.headers,
+        headers,
         query: opts.query,
         body: bodyReadable,
         payloadAsStream: true
