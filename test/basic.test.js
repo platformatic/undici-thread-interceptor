@@ -12,7 +12,7 @@ const { Agent, request } = require('undici')
 const { readFile } = require('node:fs').promises
 const Fastify = require('fastify')
 
-test('basic', async (t) => {
+test.only('basic', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 

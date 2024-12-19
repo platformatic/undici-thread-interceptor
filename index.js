@@ -121,18 +121,44 @@ function createThreadInterceptor (opts) {
           )
           // TODO(mcollina): I don't think this can be triggered,
           // but we should consider adding a test for this in the future
-          /* c8 ignore next 4 */
+          /* c8 ignore next 5 */
           if (controller.aborted) {
+            // TODO(mcollina): destroy the port?
             handler.onResponseError(controller, controller.reason)
             return
           }
         } catch (err) {
+          // TODO: should we destroy the port?
           handler.onResponseError(controller, err)
           return
         }
 
-        handler.onResponseData(controller, res.rawPayload)
-        handler.onResponseEnd(controller, [])
+        const body = new MessagePortReadable({
+          // TODO(mcollina): add reference to worker/parent port here, otherwise we won't know if the other party is dead
+          port: res.port
+        })
+
+        controller.on('resume', () => {
+          body.resume()
+        })
+
+        // TODO(mcollina): this is missing a test
+        /* c8 ignore next 3 */
+        controller.on('pause', () => {
+          body.pause()
+        })
+
+        body.on('data', (chunk) => {
+          handler.onResponseData(controller, chunk)
+        })
+
+        body.on('end', () => {
+          handler.onResponseEnd(controller, [])
+        })
+
+        body.on('error', (err) => {
+          handler.onResponseError(controller, err)
+        })
       })
 
       return true
@@ -298,6 +324,7 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
         headers: opts.headers,
         query: opts.query,
         body: bodyReadable,
+        payloadAsStream: true
       }
       interceptor.hooks.fireOnServerRequest(injectOpts, () => {
         const onInject = (err, res) => {
@@ -307,18 +334,15 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
             return
           }
 
+          const transferable = MessagePortWritable.asTransferable({
+            // TODO(mollina): add the parent port here, as we would need to have the worker instead
+            body: res.stream()
+          })
+
           const newRes = {
             headers: res.headers,
             statusCode: res.statusCode,
-          }
-
-          if (res.headers['content-type']?.indexOf('application/json') === 0) {
-          // TODO(mcollina): maybe use a fast path also for HTML
-          // fast path because it's utf-8, use a string
-            newRes.rawPayload = res.payload
-          } else {
-          // slow path, buffer
-            newRes.rawPayload = res.rawPayload
+            port: transferable.port,
           }
 
           const forwardRes = {
@@ -331,7 +355,7 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
 
           // So we route the message back to the port
           // that sent the request
-          this.postMessage(forwardRes)
+          this.postMessage(forwardRes, transferable.transferList)
         }
 
         if (!server) {
