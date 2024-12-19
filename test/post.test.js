@@ -67,7 +67,7 @@ test('POST with Stream that errors', async (t) => {
 
   const agent = new Agent().compose(interceptor)
 
-  await rejects(request('http://myserver.local/echo-body', {
+  const res = await request('http://myserver.local/echo-body', {
     dispatcher: agent,
     method: 'POST',
     headers: {
@@ -78,7 +78,14 @@ test('POST with Stream that errors', async (t) => {
         this.destroy(new Error('kaboom'))
       },
     }),
-  }))
+  })
+
+  strictEqual(res.statusCode, 400)
+  deepStrictEqual(await res.body.json(), {
+    statusCode: 400,
+    error: 'Bad Request',
+    message: 'kaboom',
+  })
 })
 
 test('POST with buffer stream', async (t) => {
@@ -105,7 +112,18 @@ test('POST with buffer stream', async (t) => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('POST errors with streams of objects', async (t) => {
+process.on('unhandledRejection', (err) => {
+  console.error('unhandledRejection', err)
+  process.exit(1)
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException', err)
+  process.exit(1)
+})
+
+// Unskip when https://github.com/nodejs/node/pull/55270 is released
+test.skip('POST errors with streams of objects', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 
@@ -122,6 +140,6 @@ test('POST errors with streams of objects', async (t) => {
     headers: {
       'content-type': 'application/json',
     },
-    body: Readable.from([{ hello: 'world' }]),
+    body: Readable.from([{ hello: 'world' }])
   }))
 })
