@@ -1,5 +1,6 @@
 'use strict'
 
+const { AsyncResource } = require('node:async_hooks')
 const RoundRobin = require('./lib/roundrobin')
 const hyperid = require('hyperid')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('undici')
@@ -94,7 +95,7 @@ function createThreadInterceptor (opts) {
         }, timeout)
       }
 
-      inflights.set(id, (err, res) => {
+      inflights.set(id, AsyncResource.bind((err, res) => {
         clearTimeout(handle)
 
         if (err) {
@@ -130,7 +131,7 @@ function createThreadInterceptor (opts) {
 
         handler.onResponseData(controller, res.rawPayload)
         handler.onResponseEnd(controller, [])
-      })
+      }))
 
       return true
     }
