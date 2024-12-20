@@ -15,6 +15,5 @@ wire({
   onServerRequest: (req, cb) => {
     console.log('onServerRequest called', JSON.stringify(req))
     cb()
-    // cb(null, 'done')
   }
 })

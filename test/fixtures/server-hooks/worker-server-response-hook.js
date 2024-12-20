@@ -12,8 +12,7 @@ app.get('/', (req, reply) => {
 wire({
   server: app,
   port: parentPort,
-  onServerResponse: (_req, res) => {
-    const payload = Buffer.from(res.rawPayload).toString()
-    console.log('onServerResponse called', JSON.stringify(payload))
+  onServerResponse: (req) => {
+    console.log('onServerResponse called', req.url)
   }
 })
