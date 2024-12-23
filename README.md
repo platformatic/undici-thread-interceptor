@@ -160,6 +160,7 @@ It's possible to set some simple **synchronous** functions as hooks:
 - `onServerError(req, res, error)`
 - `onClientRequest(req, clientCtx)`
 - `onClientResponse(req, res, clientCtx)`
+- `onClientResponseEnd(req, res, clientCtx)`
 - `onClientError(req, res, clientCtx, error)`
 
 The `clientCtx` is used to pass through hooks calls objects which cannot be set on request
