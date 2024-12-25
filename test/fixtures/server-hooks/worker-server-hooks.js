@@ -19,6 +19,6 @@ wire({
   },
   onServerResponse: (req, res) => {
     const { dataInRequest } = req
-    console.log('onServerReponse called:', dataInRequest)
+    console.log('onServerResponse called:', dataInRequest)
   }
 })

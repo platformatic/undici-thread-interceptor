@@ -131,6 +131,8 @@ function createThreadInterceptor (opts) {
 
         handler.onResponseData(controller, res.rawPayload)
         handler.onResponseEnd(controller, [])
+
+        hooks.fireOnClientResponseEnd(newOpts, res, clientCtx)
       }))
 
       return true

@@ -106,6 +106,28 @@ test('hooks - onClientResponse', async (t) => {
   deepStrictEqual(hookCalled, '{"hello":"world"}')
 })
 
+test('hooks - onClientResponseEnd', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+  let hookCalled = null
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    onClientResponseEnd: (_req, res) => {
+      hookCalled = Buffer.from(res.rawPayload).toString()
+    }
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(hookCalled, '{"hello":"world"}')
+})
+
 test('hooks - onClientError', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'error.js'))
   t.after(() => worker.terminate())
@@ -226,7 +248,7 @@ test('hooks - request propagation between onServerRequest and onServerResponse',
     lines.push(line)
   })
   await sleep(300)
-  deepStrictEqual(lines, ['onServerRequest called {"method":"GET","url":"/","headers":{"host":"myserver.local"}}', 'onServerReponse called: propagated'])
+  deepStrictEqual(lines, ['onServerRequest called {"method":"GET","url":"/","headers":{"host":"myserver.local"}}', 'onServerResponse called: propagated'])
 })
 
 test('hooks - request propagation between onClientRequest and onClientResponse', async (t) => {
