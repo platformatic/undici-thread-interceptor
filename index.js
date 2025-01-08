@@ -158,6 +158,7 @@ function createThreadInterceptor (opts) {
 
           body.on('end', () => {
             handler.onResponseEnd(controller, [])
+            hooks.fireOnClientResponseEnd(newOpts, res, clientCtx)
           })
 
           // TODO(mcollina): this is missing a test
@@ -168,6 +169,7 @@ function createThreadInterceptor (opts) {
         } else {
           handler.onResponseData(controller, res.body)
           handler.onResponseEnd(controller, [])
+          hooks.fireOnClientResponseEnd(newOpts, res, clientCtx)
         }
       }))
 
