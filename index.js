@@ -358,19 +358,26 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
           let transferList
 
           if (parsedLength < MAX_BODY) {
-            // TODO(mcollina): handle errors
-            const body = await collectBody(res.stream())
+            try {
+              const body = await collectBody(res.stream())
 
-            newRes = {
-              headers: res.headers,
-              statusCode: res.statusCode,
-              body
-            }
+              newRes = {
+                headers: res.headers,
+                statusCode: res.statusCode,
+                body
+              }
 
-            forwardRes = {
-              type: 'response',
-              id,
-              res: newRes,
+              forwardRes = {
+                type: 'response',
+                id,
+                res: newRes,
+              }
+            } catch (err) {
+              forwardRes = {
+                type: 'response',
+                id,
+                err
+              }
             }
           } else {
             const transferable = MessagePortWritable.asTransferable({

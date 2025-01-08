@@ -58,6 +58,24 @@ app.get('/big', (req, reply) => {
   return big
 })
 
+app.get('/stream-error', (req, reply) => {
+  // The content-lengh header is necessary to make sure that
+  // the mesh network collects the whole body
+  reply.header('content-length', 1024)
+  let called = false
+  reply.send(new Readable({
+    read () {
+      if (!called) {
+        called = true
+        this.push('hello')
+        setTimeout(() => {
+          this.destroy(new Error('kaboom'))
+        }, 1000)
+      }
+    },
+  }))
+})
+
 app.post('/echo-body', (req, reply) => {
   reply.send(req.body)
 })

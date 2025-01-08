@@ -461,3 +461,19 @@ test('big stream using backpressure', async (t) => {
   await once(body, 'end')
   strictEqual(size, 1024 * 1024 * 100)
 })
+
+test('stream-error', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  await rejects(request('http://myserver.local/stream-error', {
+    dispatcher: agent,
+  }))
+})
