@@ -44,6 +44,20 @@ app.get('/no-headers', (req, reply) => {
   reply.send(Readable.from(['text'], { objectMode: false }))
 })
 
+app.get('/big', (req, reply) => {
+  let i = 0
+  const big = new Readable({
+    read () {
+      if (++i > 100) {
+        this.push(null)
+        return
+      }
+      this.push(Buffer.alloc(1024 * 1024, 'x'))
+    },
+  })
+  return big
+})
+
 app.post('/echo-body', (req, reply) => {
   reply.send(req.body)
 })

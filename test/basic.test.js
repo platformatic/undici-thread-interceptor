@@ -432,3 +432,32 @@ test('empty header', async (t) => {
   strictEqual(statusCode, 200)
   deepStrictEqual(await body.text(), 'hello world')
 })
+
+test('big stream using backpressure', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode, body } = await request('http://myserver.local/big', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  let size = 0
+
+  body.on('readable', () => {
+    let chunk
+    while ((chunk = body.read()) !== null) {
+      size += chunk.length
+    }
+  })
+
+  await once(body, 'end')
+  strictEqual(size, 1024 * 1024 * 100)
+})

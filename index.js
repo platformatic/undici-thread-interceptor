@@ -79,7 +79,6 @@ function createThreadInterceptor (opts) {
         const body = newOpts.body
         delete newOpts.body
         const transferable = MessagePortWritable.asTransferable({
-          // TODO(mollina): add the parent port here, as we would need to have the worker instead
           body
         })
 
@@ -126,19 +125,19 @@ function createThreadInterceptor (opts) {
           // but we should consider adding a test for this in the future
           /* c8 ignore next 5 */
           if (controller.aborted) {
-            // TODO(mcollina): destroy the port?
+            // We need to close the transferable port here
             handler.onResponseError(controller, controller.reason)
             return
           }
         } catch (err) {
-          // TODO: should we destroy the port?
+          // No need to close the transferable port here, because it cannot happen
+          // for requests with a body
           handler.onResponseError(controller, err)
           return
         }
 
         if (res.port) {
           const body = new MessagePortReadable({
-            // TODO(mcollina): add reference to worker/parent port here, otherwise we won't know if the other party is dead
             port: res.port
           })
 
@@ -146,8 +145,6 @@ function createThreadInterceptor (opts) {
             body.resume()
           })
 
-          // TODO(mcollina): this is missing a test
-          /* c8 ignore next 3 */
           controller.on('pause', () => {
             body.pause()
           })
@@ -325,7 +322,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
 
       if (bodyPort) {
         bodyReadable = new MessagePortReadable({
-          // TODO(mcollina): add reference to worker/parent port here, otherwise we won't know if the other party is dead
           port: bodyPort
         })
       }
