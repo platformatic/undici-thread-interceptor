@@ -123,9 +123,9 @@ function createThreadInterceptor (opts) {
           )
           // TODO(mcollina): I don't think this can be triggered,
           // but we should consider adding a test for this in the future
-          /* c8 ignore next 5 */
+          /* c8 ignore next 6 */
           if (controller.aborted) {
-            // We need to close the transferable port here
+            res.port?.close()
             handler.onResponseError(controller, controller.reason)
             return
           }

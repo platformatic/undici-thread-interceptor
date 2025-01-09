@@ -106,7 +106,7 @@ test('support undici v6 handler interface', async (t) => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test.only('503 status code re-tries it with undici v6 GD', async (t) => {
+test('503 status code re-tries it with undici v6 GD', async (t) => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
     workerData: {
       message: 'mesh',

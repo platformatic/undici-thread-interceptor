@@ -133,3 +133,28 @@ test.skip('POST errors with streams of objects', async (t) => {
     body: Readable.from([{ hello: 'world' }])
   }))
 })
+
+test('correctly handles aborted requests', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const abortController = new AbortController()
+  setImmediate(() => abortController.abort())
+
+  await rejects(request('http://myserver.local/unfinished-business', {
+    dispatcher: agent,
+    signal: abortController.signal,
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ hello: 'world' })
+  }))
+})
