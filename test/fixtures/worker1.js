@@ -44,6 +44,53 @@ app.get('/no-headers', (req, reply) => {
   reply.send(Readable.from(['text'], { objectMode: false }))
 })
 
+app.get('/big', (req, reply) => {
+  let i = 0
+  const big = new Readable({
+    read () {
+      if (++i > 100) {
+        this.push(null)
+        return
+      }
+      this.push(Buffer.alloc(1024 * 1024, 'x'))
+    },
+  })
+  return big
+})
+
+app.get('/stream-error', (req, reply) => {
+  // The content-lengh header is necessary to make sure that
+  // the mesh network collects the whole body
+  reply.header('content-length', 1024)
+  let called = false
+  reply.send(new Readable({
+    read () {
+      if (!called) {
+        called = true
+        this.push('hello')
+        setTimeout(() => {
+          this.destroy(new Error('kaboom'))
+        }, 1000)
+      }
+    },
+  }))
+})
+
+app.get('/stream-error-2', (req, reply) => {
+  let called = false
+  reply.send(new Readable({
+    read () {
+      if (!called) {
+        called = true
+        this.push('hello')
+        setTimeout(() => {
+          this.destroy(new Error('kaboom'))
+        }, 1000)
+      }
+    },
+  }))
+})
+
 app.post('/echo-body', (req, reply) => {
   reply.send(req.body)
 })

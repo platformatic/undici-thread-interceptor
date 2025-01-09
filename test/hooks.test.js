@@ -91,8 +91,8 @@ test('hooks - onClientResponse', async (t) => {
 
   const interceptor = createThreadInterceptor({
     domain: '.local',
-    onClientResponse: (_req, res) => {
-      hookCalled = Buffer.from(res.rawPayload).toString()
+    onClientResponse: (req) => {
+      hookCalled = req.path
     }
   })
   interceptor.route('myserver', worker)
@@ -103,7 +103,7 @@ test('hooks - onClientResponse', async (t) => {
   })
 
   strictEqual(statusCode, 200)
-  deepStrictEqual(hookCalled, '{"hello":"world"}')
+  strictEqual(hookCalled, '/')
 })
 
 test('hooks - onClientResponseEnd', async (t) => {
@@ -114,7 +114,7 @@ test('hooks - onClientResponseEnd', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
     onClientResponseEnd: (_req, res) => {
-      hookCalled = Buffer.from(res.rawPayload).toString()
+      hookCalled = true
     }
   })
   interceptor.route('myserver', worker)
@@ -125,7 +125,7 @@ test('hooks - onClientResponseEnd', async (t) => {
   })
 
   strictEqual(statusCode, 200)
-  deepStrictEqual(hookCalled, '{"hello":"world"}')
+  strictEqual(hookCalled, true)
 })
 
 test('hooks - onClientError', async (t) => {
@@ -175,7 +175,7 @@ test('hooks - onServerRequest', async (t) => {
     lines.push(line)
   })
   await sleep(300)
-  deepStrictEqual(lines, ['onServerRequest called {"method":"GET","url":"/","headers":{"host":"myserver.local"}}'])
+  deepStrictEqual(lines, ['onServerRequest called {"method":"GET","url":"/","headers":{"host":"myserver.local"},"payloadAsStream":true}'])
 })
 
 test('hooks - onServerResponse', async (t) => {
@@ -200,7 +200,7 @@ test('hooks - onServerResponse', async (t) => {
     lines.push(line)
   })
   await sleep(300)
-  deepStrictEqual(lines, ['onServerResponse called "{\\"hello\\":\\"world\\"}"'])
+  deepStrictEqual(lines, ['onServerResponse called /'])
 })
 
 test('hooks - onServerError', async (t) => {
@@ -248,7 +248,7 @@ test('hooks - request propagation between onServerRequest and onServerResponse',
     lines.push(line)
   })
   await sleep(300)
-  deepStrictEqual(lines, ['onServerRequest called {"method":"GET","url":"/","headers":{"host":"myserver.local"}}', 'onServerResponse called: propagated'])
+  deepStrictEqual(lines, ['onServerRequest called {"method":"GET","url":"/","headers":{"host":"myserver.local"},"payloadAsStream":true}', 'onServerResponse called: propagated'])
 })
 
 test('hooks - request propagation between onClientRequest and onClientResponse', async (t) => {

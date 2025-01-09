@@ -432,3 +432,67 @@ test('empty header', async (t) => {
   strictEqual(statusCode, 200)
   deepStrictEqual(await body.text(), 'hello world')
 })
+
+test('big stream using backpressure', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode, body } = await request('http://myserver.local/big', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  let size = 0
+
+  body.on('readable', () => {
+    let chunk
+    while ((chunk = body.read()) !== null) {
+      size += chunk.length
+    }
+  })
+
+  await once(body, 'end')
+  strictEqual(size, 1024 * 1024 * 100)
+})
+
+test('handles an error within a stream response with a content length', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  await rejects(request('http://myserver.local/stream-error', {
+    dispatcher: agent,
+  }))
+})
+
+test('handle an error with a stream response response without content length', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const res = await request('http://myserver.local/stream-error-2', {
+    dispatcher: agent,
+  })
+
+  strictEqual(res.statusCode, 200)
+  await rejects(res.body.text())
+})

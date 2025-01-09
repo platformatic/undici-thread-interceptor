@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "hyperid": "^3.2.0",
-    "light-my-request": "^6.0.0",
+    "light-my-request": "^6.5.1",
     "undici": "^7.0.0"
   }
 }
