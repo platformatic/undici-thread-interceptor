@@ -496,3 +496,22 @@ test('handle an error with a stream response response without content length', a
   strictEqual(res.statusCode, 200)
   await rejects(res.body.text())
 })
+
+test.only('empty-stream', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode, body } = await request('http://myserver.local/empty-stream', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(await body.text(), '')
+})

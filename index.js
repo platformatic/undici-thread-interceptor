@@ -440,7 +440,7 @@ async function collectBody (stream) {
   }
 
   /* c8 ignore next 7 */
-  if (data[0] instanceof Buffer || data[0] instanceof Uint8Array) {
+  if (data[0] instanceof Buffer || data[0] instanceof Uint8Array || data.length === 0) {
     return Buffer.concat(data)
   } else {
     throw new Error('Cannot transfer streams of strings or objects')
