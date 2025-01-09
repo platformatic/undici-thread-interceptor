@@ -462,7 +462,7 @@ test('big stream using backpressure', async (t) => {
   strictEqual(size, 1024 * 1024 * 100)
 })
 
-test('stream-error', async (t) => {
+test('handles an error within a stream response with a content length', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 
@@ -476,4 +476,23 @@ test('stream-error', async (t) => {
   await rejects(request('http://myserver.local/stream-error', {
     dispatcher: agent,
   }))
+})
+
+test('handle an error with a stream response response without content length', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const res = await request('http://myserver.local/stream-error-2', {
+    dispatcher: agent,
+  })
+
+  strictEqual(res.statusCode, 200)
+  await rejects(res.body.text())
 })

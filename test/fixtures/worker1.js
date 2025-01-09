@@ -76,6 +76,21 @@ app.get('/stream-error', (req, reply) => {
   }))
 })
 
+app.get('/stream-error-2', (req, reply) => {
+  let called = false
+  reply.send(new Readable({
+    read () {
+      if (!called) {
+        called = true
+        this.push('hello')
+        setTimeout(() => {
+          this.destroy(new Error('kaboom'))
+        }, 1000)
+      }
+    },
+  }))
+})
+
 app.post('/echo-body', (req, reply) => {
   reply.send(req.body)
 })
