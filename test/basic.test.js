@@ -497,7 +497,7 @@ test('handle an error with a stream response response without content length', a
   await rejects(res.body.text())
 })
 
-test.only('empty-stream', async (t) => {
+test('empty-stream', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 
