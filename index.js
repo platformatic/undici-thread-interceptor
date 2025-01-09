@@ -158,8 +158,6 @@ function createThreadInterceptor (opts) {
             hooks.fireOnClientResponseEnd(newOpts, res, clientCtx)
           })
 
-          // TODO(mcollina): this is missing a test
-          /* c8 ignore next 3 */
           body.on('error', (err) => {
             handler.onResponseError(controller, err)
           })
@@ -381,7 +379,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
             }
           } else {
             const transferable = MessagePortWritable.asTransferable({
-              // TODO(mollina): add the parent port here, as we would need to have the worker instead
               body: res.stream()
             })
             transferList = transferable.transferList
