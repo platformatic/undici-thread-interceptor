@@ -91,6 +91,17 @@ app.get('/stream-error-2', (req, reply) => {
   }))
 })
 
+app.get('/empty-stream', (req, reply) => {
+  // The content-lengh header is necessary to make sure that
+  // the mesh network collects the whole body
+  reply.header('content-length', 0)
+  reply.send(new Readable({
+    read () {
+      this.push(null)
+    },
+  }))
+})
+
 app.post('/echo-body', (req, reply) => {
   reply.send(req.body)
 })
