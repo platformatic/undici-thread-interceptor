@@ -199,6 +199,10 @@ function createThreadInterceptor (opts) {
           forwarded.get(port).add(port1)
           otherPort.postMessage({ type: 'route', url, port: port2, threadId: port.threadId }, [port2])
           port.postMessage({ type: 'route', url: key, port: port1, threadId: otherPort.threadId }, [port1])
+          // If we have a real address for the other port, we need to forward it
+          if (otherPort[kAddress]) {
+            port.postMessage({ type: 'address', url: key, address: otherPort[kAddress], threadId: otherPort.threadId })
+          }
         }
       }
     }
@@ -217,9 +221,16 @@ function createThreadInterceptor (opts) {
     function onClose () {
       const roundRobin = routes.get(url)
       roundRobin.remove(port)
-      for (const f of forwarded.get(port)) {
-        f.close()
+
+      if (forwarded.has(port)) {
+        for (const f of forwarded.get(port)) {
+          f.close()
+        }
+        // delete all the array of forwarded ports,
+        // to avoid a memory leak
+        forwarded.delete(port)
       }
+
       for (const cb of portInflights.get(port).values()) {
         cb(new Error('Worker exited'))
       }
@@ -358,7 +369,6 @@ function wire ({ server: newServer, port, ...undiciOpts }) {
           if (parsedLength < MAX_BODY) {
             try {
               const body = await collectBody(res.stream())
-
               newRes = {
                 headers: res.headers,
                 statusCode: res.statusCode,
