@@ -18,7 +18,6 @@ const MAX_BODY = 32 * 1024
 function createThreadInterceptor (opts) {
   const routes = new Map()
   const portInflights = new Map()
-  const forwarded = new Map()
   const nextId = hyperid()
   const domain = opts?.domain
   const hooks = new Hooks(opts)
@@ -187,16 +186,10 @@ function createThreadInterceptor (opts) {
     // Hostname are case-insensitive
     url = url.toLowerCase()
 
-    if (!forwarded.has(port)) {
-      forwarded.set(port, new Set())
-    }
-
     if (forward) {
       for (const [key, roundRobin] of routes) {
         for (const otherPort of roundRobin) {
           const { port1, port2 } = new MessageChannel()
-          forwarded.get(otherPort).add(port2)
-          forwarded.get(port).add(port1)
           otherPort.postMessage({ type: 'route', url, port: port2, threadId: port.threadId }, [port2])
           port.postMessage({ type: 'route', url: key, port: port1, threadId: otherPort.threadId }, [port1])
           // If we have a real address for the other port, we need to forward it
@@ -221,15 +214,6 @@ function createThreadInterceptor (opts) {
     function onClose () {
       const roundRobin = routes.get(url)
       roundRobin.remove(port)
-
-      if (forwarded.has(port)) {
-        for (const f of forwarded.get(port)) {
-          f.close()
-        }
-        // delete all the array of forwarded ports,
-        // to avoid a memory leak
-        forwarded.delete(port)
-      }
 
       for (const cb of portInflights.get(port).values()) {
         cb(new Error('Worker exited'))
