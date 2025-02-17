@@ -16,6 +16,7 @@
   "license": "MIT",
   "devDependencies": {
     "@fastify/static": "^8.0.2",
+    "autocannon": "^8.0.0",
     "borp": "^0.19.0",
     "eslint": "^9.5.0",
     "express": "^4.19.2",

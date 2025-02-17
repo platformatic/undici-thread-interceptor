@@ -7,18 +7,18 @@ const { Worker } = require('worker_threads')
 const { createThreadInterceptor } = require('../')
 const { Agent, request, interceptors } = require('undici')
 const { once } = require('events')
-const RoundRobin = require('../lib/roundrobin')
+const { RoundRobin } = require('../lib/roundrobin')
 
-test('round-robin .route with array', async (t) => {
+test('round-robin .route with array', async t => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
-    workerData: { message: 'mesh' },
+    workerData: { message: 'mesh' }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
   interceptor.route('myserver', [worker1, worker2])
 
@@ -26,7 +26,7 @@ test('round-robin .route with array', async (t) => {
 
   {
     const { body } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     deepStrictEqual(await body.json(), { threadId: worker1.threadId })
@@ -34,23 +34,23 @@ test('round-robin .route with array', async (t) => {
 
   {
     const { body } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     deepStrictEqual(await body.json(), { threadId: worker2.threadId })
   }
 })
 
-test('round-robin multiple .route', async (t) => {
+test('round-robin multiple .route', async t => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
-    workerData: { message: 'mesh' },
+    workerData: { message: 'mesh' }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
   interceptor.route('myserver', worker1)
   interceptor.route('myserver', worker2)
@@ -59,7 +59,7 @@ test('round-robin multiple .route', async (t) => {
 
   {
     const { body } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     deepStrictEqual(await body.json(), { threadId: worker1.threadId })
@@ -67,23 +67,23 @@ test('round-robin multiple .route', async (t) => {
 
   {
     const { body } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     deepStrictEqual(await body.json(), { threadId: worker2.threadId })
   }
 })
 
-test('round-robin one worker exits', async (t) => {
+test('round-robin one worker exits', async t => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
-    workerData: { message: 'mesh' },
+    workerData: { message: 'mesh' }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
   interceptor.route('myserver', worker1)
   interceptor.route('myserver', worker2)
@@ -92,7 +92,7 @@ test('round-robin one worker exits', async (t) => {
 
   {
     const { body } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     deepStrictEqual(await body.json(), { threadId: worker1.threadId })
@@ -105,23 +105,23 @@ test('round-robin one worker exits', async (t) => {
 
   {
     const { body } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     deepStrictEqual(await body.json(), { threadId: worker1.threadId })
   }
 })
 
-test('round-robin one worker exits, in flight request', async (t) => {
+test('round-robin one worker exits, in flight request', async t => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
-    workerData: { message: 'mesh' },
+    workerData: { message: 'mesh' }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
   interceptor.route('myserver', worker1)
   interceptor.route('myserver', worker2)
@@ -130,7 +130,7 @@ test('round-robin one worker exits, in flight request', async (t) => {
 
   {
     const { body } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     deepStrictEqual(await body.json(), { threadId: worker1.threadId })
@@ -138,12 +138,14 @@ test('round-robin one worker exits, in flight request', async (t) => {
 
   worker2.terminate()
 
-  await rejects(request('http://myserver.local/whoami', {
-    dispatcher: agent,
-  }))
+  await rejects(
+    request('http://myserver.local/whoami', {
+      dispatcher: agent
+    })
+  )
 })
 
-test('round-robin one worker is using network', async (t) => {
+test('round-robin one worker is using network', async t => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'network.js'))
   t.after(() => worker1.terminate())
 
@@ -173,24 +175,24 @@ test('round-robin one worker is using network', async (t) => {
   deepStrictEqual(responses, [{ via: 'thread' }, { via: 'network' }, { via: 'thread' }])
 })
 
-test('RoundRobin remove unknown port', () => {
+test('RoundRobin delete unknown port', () => {
   const rr = new RoundRobin()
-  rr.remove({})
+  rr.delete({})
 })
 
-test('503 status code re tries it', async (t) => {
+test('503 status code retries it', async t => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
     workerData: {
       message: 'mesh',
-      whoamiReturn503: true,
-    },
+      whoamiReturn503: true
+    }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
   interceptor.route('myserver', [worker1, worker2])
 
@@ -198,7 +200,7 @@ test('503 status code re tries it', async (t) => {
 
   {
     const { body, statusCode } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     strictEqual(statusCode, 200)
@@ -207,7 +209,7 @@ test('503 status code re tries it', async (t) => {
 
   {
     const { body, statusCode } = await request('http://myserver.local/whoami', {
-      dispatcher: agent,
+      dispatcher: agent
     })
 
     strictEqual(statusCode, 200)

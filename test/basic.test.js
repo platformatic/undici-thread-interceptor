@@ -79,7 +79,7 @@ test('two service in a mesh, one is terminated with an inflight message', async 
   strictEqual(res.statusCode, 500)
   deepStrictEqual(await res.body.json(), {
     error: 'Internal Server Error',
-    message: 'Worker exited',
+    message: 'The target worker thread has exited before sending a response.',
     statusCode: 500,
   })
 })
@@ -112,7 +112,7 @@ test('two service in a mesh, one is terminated, then a message is sent', async (
   strictEqual(res.statusCode, 500)
   deepStrictEqual(await res.body.json(), {
     error: 'Internal Server Error',
-    message: `No server found for myserver.local in ${worker2.threadId}`,
+    message: `No target found for myserver.local in thread ${worker2.threadId}.`,
     statusCode: 500,
   })
 })
@@ -185,7 +185,7 @@ test('throws an error when no server is wired', async (t) => {
 
   await rejects(request('http://myserver.local', {
     dispatcher: agent,
-  }), new Error(`No server found for myserver.local in ${worker.threadId}`))
+  }), new Error(`No responding server found for myserver.local in thread ${worker.threadId}.`))
 })
 
 test('pass through with domain', async (t) => {
