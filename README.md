@@ -146,8 +146,14 @@ const { interceptor } = wire({ server: app, port: parentPort });
 
 // ...
 
-interceptor.close();
+await interceptor.close();
 ```
+
+#### Gracefully close all the threads 
+
+If you call the `close` method from the main thread, it will call the `close` function on each routed thread.
+
+After calling the `close` method, each call to `route` will throw an error, unless you call the `restart` method first.
 
 ## API
 
