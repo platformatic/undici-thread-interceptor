@@ -28,7 +28,8 @@ const worker = new Worker(join(import.meta.dirname, "worker.js"));
 const interceptor = createThreadInterceptor({
   domain: ".local", // The prefix for all local domains
 });
-interceptor.route("myserver", worker);
+
+interceptor.route("myserver", worker); // This method is also aliased as addRoute
 
 const agent = new Agent().compose(interceptor);
 
@@ -133,7 +134,29 @@ setTimeout(() => {
 }, 5000);
 ```
 
-#### Gracefully close the worker thread
+#### Remove a thread from the mesh
+```javascript
+import { Worker } from "node:worker_threads";
+import { join } from "node:path";
+import { createThreadInterceptor } from "undici-thread-interceptor";
+import { Agent, request } from "undici";
+
+const worker = new Worker(join(import.meta.dirname, "worker.js"));
+
+const interceptor = createThreadInterceptor({
+  domain: ".local", // The prefix for all local domains
+});
+
+interceptor.route("myserver", worker); // This method is also aliased as addRoute
+
+// ...
+
+interceptor.unroute("myserver", worker); // This method is also aliased as removeRoute
+
+// ...
+```
+
+#### Gracefully close the thread
 
 If you want to gracefully close the worker thread, remember to call the `close` function of the interceptor.
 
