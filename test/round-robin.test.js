@@ -266,4 +266,5 @@ test('round-robin multiple add/remove operations', async t => {
 
   await throws(() => interceptor.route('myserver', worker1), { message: 'The dispatcher has been closed.' })
   await throws(() => interceptor.unroute('myserver', worker1), { message: 'The dispatcher has been closed.' })
+  await interceptor.unroute('myserver', worker1, true)
 })
