@@ -370,6 +370,30 @@ test('POST with Stream', async (t) => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
+test('POST with buffer', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode, body } = await request('http://myserver.local/echo-body', {
+    dispatcher: agent,
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: Buffer.from(JSON.stringify({ hello: 'world' })),
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(await body.json(), { hello: 'world' })
+})
+
 test('Get binary file', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
