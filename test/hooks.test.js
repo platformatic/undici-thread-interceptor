@@ -24,18 +24,18 @@ test('hooks - should throw if handler not a function', async (t) => {
   }
 })
 
-test('hooks - should throw onServerRequest is an array', async (t) => {
+test('hooks - should throw if array contains non-function', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 
   try {
     createThreadInterceptor({
       domain: '.local',
-      onServerRequest: ['nor a function'],
+      onServerRequest: ['not a function'],
     })
     throw new Error('should not be here')
   } catch (err) {
-    strictEqual(err.message, 'Expected a function, got object')
+    strictEqual(err.message, 'Expected a function, got string')
   }
 })
 
@@ -301,4 +301,128 @@ test('hooks - context propagation between onClientRequest and onClientResponse',
 
   strictEqual(statusCode, 200)
   deepStrictEqual(hookCalledClient, 'propagated')
+})
+
+test('hooks - array of onClientRequest hooks', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+  const calls = []
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    onClientRequest: [
+      (_req, ctx) => {
+        calls.push('first')
+        ctx.first = true
+      },
+      (_req, ctx) => {
+        calls.push('second')
+        ctx.second = true
+      },
+      (_req, ctx) => {
+        calls.push('third')
+        ctx.third = true
+      }
+    ]
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(calls, ['first', 'second', 'third'])
+})
+
+test('hooks - array of onServerRequest hooks with proper chaining', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'server-hooks', 'worker-server-request-array.js'), { stdout: true })
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+
+  const lines = []
+  worker.stdout.pipe(split2()).on('data', line => {
+    lines.push(line)
+  })
+  await sleep(300)
+  deepStrictEqual(lines, [
+    'First hook called',
+    'Second hook called',
+    'Third hook called'
+  ])
+})
+
+test('hooks - array of onClientResponse hooks', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+  const calls = []
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    onClientResponse: [
+      (req, res, ctx) => {
+        calls.push(`first: ${res.statusCode}`)
+      },
+      (req, res, ctx) => {
+        calls.push(`second: ${res.statusCode}`)
+      }
+    ]
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(calls, ['first: 200', 'second: 200'])
+})
+
+test('hooks - mixed single and array hooks', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+  const requestCalls = []
+  const responseCalls = []
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    onClientRequest: (req, ctx) => {
+      requestCalls.push('single')
+    },
+    onClientResponse: [
+      (req, res, ctx) => {
+        responseCalls.push('array1')
+      },
+      (req, res, ctx) => {
+        responseCalls.push('array2')
+      }
+    ]
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent,
+  })
+
+  strictEqual(statusCode, 200)
+  deepStrictEqual(requestCalls, ['single'])
+  deepStrictEqual(responseCalls, ['array1', 'array2'])
 })
