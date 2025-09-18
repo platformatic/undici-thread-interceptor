@@ -6,6 +6,7 @@ const { Worker, MessageChannel } = require('node:worker_threads')
 const { MessagePortWritable, MessagePortReadable } = require('../lib/message-port-streams')
 const { once } = require('node:events')
 const { Readable } = require('node:stream')
+const { setTimeout: sleep } = require('node:timers/promises')
 
 test('producer to consumer', async (t) => {
   const channel = new MessageChannel()
@@ -184,4 +185,28 @@ test('MessagePortWritable.asTransferable(stream, worker)', async (t) => {
   t.assert.deepEqual(chunks, [Buffer.from('Hello, World!')])
 
   await once(worker, 'exit')
+})
+
+test('delayed read', async (t) => {
+  const channel = new MessageChannel()
+  const readable = new MessagePortReadable({
+    port: channel.port1
+  })
+
+  const worker = new Worker(join(__dirname, 'fixtures', 'streams', 'producer.js'), {
+    workerData: { port: channel.port2 },
+    transferList: [channel.port2]
+  })
+
+  const exited = once(worker, 'exit')
+
+  // We must wait a bit to ensure that the producer has sent the data
+  // as there is a race condition between the producer sending the data
+  await sleep(1000)
+
+  for await (const chunk of readable) {
+    t.assert.equal(chunk.toString(), 'Hello, World!')
+  }
+
+  await exited
 })
