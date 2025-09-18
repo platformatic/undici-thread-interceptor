@@ -1,11 +1,12 @@
 'use strict'
 
 const { test } = require('node:test')
-const { deepStrictEqual, strictEqual } = require('node:assert')
+const { deepStrictEqual, strictEqual, rejects } = require('node:assert')
 const { join } = require('node:path')
 const { Worker } = require('node:worker_threads')
 const { createThreadInterceptor } = require('../')
 const { Agent, request } = require('undici')
+const { setTimeout: sleep } = require('node:timers/promises')
 
 test('diagnostics channel - events are published in worker thread', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker-diagnostics-channel.js'))
@@ -75,4 +76,29 @@ test('diagnostics channel - error response', async (t) => {
   strictEqual(errorFinishEvent.url, '/error')
   strictEqual(errorFinishEvent.statusCode, 500)
   strictEqual(errorFinishEvent.hasServer, true)
+})
+
+test('diagnostics channel - destroy response', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker-diagnostics-channel.js'))
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local'
+  })
+  interceptor.route('myserver', worker)
+
+  const agent = new Agent().compose(interceptor)
+
+  await rejects(request('http://myserver.local/destroy', {
+    dispatcher: agent
+  }))
+
+  await sleep(1000) // wait for the event to be processed in the worker
+
+  const eventsRes = await request('http://myserver.local/events', {
+    dispatcher: agent
+  })
+  const events = await eventsRes.body.json()
+  strictEqual(events.start.length, 2)
+  strictEqual(events.finish.length, 0)
 })

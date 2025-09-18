@@ -30,7 +30,7 @@ channelFinish.subscribe((event) => {
   events.finish.push({
     method: event.request.method,
     url: event.request.url,
-    statusCode: event.response?.statusCode,
+    statusCode: event.response.statusCode,
     hasServer: !!event.server
   })
 })
@@ -45,6 +45,12 @@ app.get('/events', (_req, reply) => {
 
 app.get('/error', (_req, reply) => {
   throw new Error('test error')
+})
+
+app.get('/destroy', (_req, reply) => {
+  reply.raw.on('error', () => {})
+  reply.raw.destroy(new Error('test error'))
+  return reply
 })
 
 wire({ server: app, port: parentPort })
