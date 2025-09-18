@@ -14,6 +14,14 @@
   ],
   "author": "Matteo Collina <hello@matteocollina.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/platformatic/undici-thread-interceptor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/platformatic/undici-thread-interceptor/issues"
+  },
+  "homepage": "https://github.com/platformatic/undici-thread-interceptor#readme",
   "devDependencies": {
     "@fastify/static": "^8.0.2",
     "autocannon": "^8.0.0",
