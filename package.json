@@ -24,6 +24,7 @@
   "homepage": "https://github.com/platformatic/undici-thread-interceptor#readme",
   "devDependencies": {
     "@fastify/static": "^8.0.2",
+    "atomic-sleep": "^1.0.0",
     "autocannon": "^8.0.0",
     "borp": "^0.20.0",
     "eslint": "^9.5.0",
@@ -34,6 +35,7 @@
     "split2": "^4.2.0"
   },
   "dependencies": {
+    "fastq": "^1.19.1",
     "hyperid": "^3.2.0",
     "light-my-request": "^6.5.1",
     "undici": "^7.0.0"
