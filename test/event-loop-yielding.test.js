@@ -86,10 +86,9 @@ test('event loop yielding under high load', async (t) => {
   })
 
   const intervalCount = await intervalCountPromise
-  console.log(`Worker event loop executed ${intervalCount} intervals during heavy load`)
 
   // Verify the event loop behavior under heavy load
   // With 100 requests × 50ms atomic-sleep each, we expect some event loop starvation
   // The low count proves the queue yielding mechanism is necessary and working
-  ok(intervalCount >= 2, `Worker event loop executed ${intervalCount} intervals during heavy load`)
+  ok(intervalCount > 2, `Worker event loop executed ${intervalCount} intervals during heavy load`)
 })
