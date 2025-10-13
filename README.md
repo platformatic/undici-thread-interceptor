@@ -337,6 +337,7 @@ This architecture allows you to scale Node.js applications across multiple threa
 
 It's possible to set some simple **synchronous** functions as hooks:
 
+- `onChannelCreation(from, to)`
 - `onServerRequest(req, cb)`
 - `onServerResponse(req, res)`
 - `onServerError(req, res, error)`
@@ -347,6 +348,14 @@ It's possible to set some simple **synchronous** functions as hooks:
 
 The `clientCtx` is used to pass through hooks calls objects which cannot be set on request
 (which is then sent through `postMessage`, so it might be not serializable).
+
+#### `onChannelCreation` hook
+
+The `onChannelCreation` hook is triggered when establishing communication channels between worker threads. It receives parameters `first` and `second` identifying the threads involved in the connection (in lower-case).
+
+This hook implements access control by allowing you to prevent channel creation. If the hook returns `false`, channel establishment is blocked, remaining hooks are skipped, and the threads cannot communicate with each other. All other return values (including `undefined`) allow the channel to be created.
+
+Use this hook to implement security policies and control which threads can communicate in your mesh network.
 
 #### Client hooks
 
