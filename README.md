@@ -361,8 +361,20 @@ The `canAccept` hook is called before routing a request to a worker. It receives
   path: string,      // Request path (e.g., "/users")
   headers: object,   // Request headers
   port: MessagePort, // The worker's MessagePort being checked
+  meta: any,         // Metadata attached when routing (see below)
 }
 ```
+
+#### Worker Metadata
+
+You can attach metadata to workers when routing to help identify them in `canAccept`:
+
+```javascript
+interceptor.route("api", worker1, { id: "worker-1", maxLoad: 100 });
+interceptor.route("api", worker2, { id: "worker-2", maxLoad: 50 });
+```
+
+The metadata is available in the `canAccept` context as `ctx.meta`.
 
 **With multiple workers**, the hook is called for each worker until one accepts:
 
@@ -412,7 +424,7 @@ const interceptor = createThreadInterceptor({
 });
 ```
 
-**Per-worker inflight tracking:**
+**Per-worker inflight tracking with metadata:**
 
 ```javascript
 const workerLoad = new Map();
@@ -420,18 +432,17 @@ const workerLoad = new Map();
 const interceptor = createThreadInterceptor({
   domain: ".local",
   canAccept: (ctx) => {
-    const load = workerLoad.get(ctx.port) ?? 0;
-    return load < 10; // Max 10 concurrent requests per worker
-  },
-  onClientRequest: (_req, ctx) => {
-    const load = workerLoad.get(ctx.port) ?? 0;
-    workerLoad.set(ctx.port, load + 1);
-  },
-  onClientResponse: (_req, _res, ctx) => {
-    const load = workerLoad.get(ctx.port) ?? 1;
-    workerLoad.set(ctx.port, load - 1);
+    const load = workerLoad.get(ctx.meta.id) ?? 0;
+    return load < ctx.meta.maxLoad;
   },
 });
+
+interceptor.route("api", worker1, { id: "w1", maxLoad: 10 });
+interceptor.route("api", worker2, { id: "w2", maxLoad: 20 });
+
+// Update load counts externally (e.g., from metrics, hooks, etc.)
+workerLoad.set("w1", 5);
+workerLoad.set("w2", 15);
 ```
 
 **Method-based shedding:**

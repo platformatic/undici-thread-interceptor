@@ -224,3 +224,83 @@ test('load shedding - conditional acceptance based on context', async (t) => {
     (err) => err.name === 'LoadSheddingError'
   )
 })
+
+test('load shedding - route with metadata', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  let receivedMeta = null
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    canAccept: (ctx) => {
+      receivedMeta = ctx.meta
+      return true
+    }
+  })
+  interceptor.route('myserver', worker, { id: 'worker-1', maxLoad: 100 })
+
+  const agent = new Agent().compose(interceptor)
+
+  await request('http://myserver.local', { dispatcher: agent })
+
+  deepStrictEqual(receivedMeta, { id: 'worker-1', maxLoad: 100 })
+})
+
+test('load shedding - metadata per worker for load decisions', async (t) => {
+  const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker1.terminate())
+  t.after(() => worker2.terminate())
+
+  const workerLoad = new Map()
+  workerLoad.set('worker-1', 15) // Over limit
+  workerLoad.set('worker-2', 5)  // Under limit
+
+  let acceptedWorker = null
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    canAccept: (ctx) => {
+      const load = workerLoad.get(ctx.meta.id) ?? 0
+      const canAccept = load < ctx.meta.maxLoad
+      if (canAccept) {
+        acceptedWorker = ctx.meta.id
+      }
+      return canAccept
+    }
+  })
+  interceptor.route('myserver', worker1, { id: 'worker-1', maxLoad: 10 })
+  interceptor.route('myserver', worker2, { id: 'worker-2', maxLoad: 10 })
+
+  const agent = new Agent().compose(interceptor)
+
+  const { statusCode } = await request('http://myserver.local', {
+    dispatcher: agent
+  })
+
+  strictEqual(statusCode, 200)
+  strictEqual(acceptedWorker, 'worker-2')
+})
+
+test('load shedding - meta is undefined when not provided', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
+  t.after(() => worker.terminate())
+
+  let receivedMeta = 'not-set'
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local',
+    canAccept: (ctx) => {
+      receivedMeta = ctx.meta
+      return true
+    }
+  })
+  interceptor.route('myserver', worker) // No metadata
+
+  const agent = new Agent().compose(interceptor)
+
+  await request('http://myserver.local', { dispatcher: agent })
+
+  strictEqual(receivedMeta, undefined)
+})
