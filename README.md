@@ -6,6 +6,7 @@ Supports:
 
 - load balancing (round robin)
 - mesh networking between the worker threads
+- load shedding (early request rejection)
 
 ## Installation
 
@@ -333,10 +334,124 @@ This architecture allows you to scale Node.js applications across multiple threa
 
 ## API
 
+### Load Shedding
+
+Load shedding allows you to reject requests early, before they enter any worker queue. This is useful for preventing request pile-up during overload, allowing load balancers to route traffic elsewhere.
+
+```javascript
+import { createThreadInterceptor, LoadSheddingError } from "undici-thread-interceptor";
+
+const interceptor = createThreadInterceptor({
+  domain: ".local",
+  canAccept: (ctx) => {
+    // Return true to accept, false to reject
+    return !isOverloaded(ctx.port);
+  },
+});
+```
+
+#### The `canAccept` Hook
+
+The `canAccept` hook is called before routing a request to a worker. It receives a context object:
+
+```javascript
+{
+  hostname: string,  // Target hostname (e.g., "api.local")
+  method: string,    // HTTP method (e.g., "GET", "POST")
+  path: string,      // Request path (e.g., "/users")
+  headers: object,   // Request headers
+  port: MessagePort, // The worker's MessagePort being checked
+}
+```
+
+**With multiple workers**, the hook is called for each worker until one accepts:
+
+```javascript
+// Three workers for the same route
+interceptor.route("api", worker1);
+interceptor.route("api", worker2);
+interceptor.route("api", worker3);
+
+// Request arrives:
+// 1. canAccept({ port: worker1, ... }) → false (busy)
+// 2. canAccept({ port: worker2, ... }) → false (busy)
+// 3. canAccept({ port: worker3, ... }) → true  → routes to worker3
+
+// If all return false → LoadSheddingError (503)
+```
+
+#### LoadSheddingError
+
+When all workers reject a request, a `LoadSheddingError` is thrown:
+
+```javascript
+import { LoadSheddingError } from "undici-thread-interceptor";
+
+try {
+  await request("http://api.local", { dispatcher: agent });
+} catch (err) {
+  if (err instanceof LoadSheddingError) {
+    // err.statusCode === 503
+    // err.code === 'UND_ERR_LOAD_SHEDDING'
+    console.log("Service overloaded, try again later");
+  }
+}
+```
+
+#### Examples
+
+**Memory-based shedding:**
+
+```javascript
+const interceptor = createThreadInterceptor({
+  domain: ".local",
+  canAccept: () => {
+    const usage = process.memoryUsage();
+    return usage.heapUsed / usage.heapTotal < 0.9; // Reject at 90% heap
+  },
+});
+```
+
+**Per-worker inflight tracking:**
+
+```javascript
+const workerLoad = new Map();
+
+const interceptor = createThreadInterceptor({
+  domain: ".local",
+  canAccept: (ctx) => {
+    const load = workerLoad.get(ctx.port) ?? 0;
+    return load < 10; // Max 10 concurrent requests per worker
+  },
+  onClientRequest: (_req, ctx) => {
+    const load = workerLoad.get(ctx.port) ?? 0;
+    workerLoad.set(ctx.port, load + 1);
+  },
+  onClientResponse: (_req, _res, ctx) => {
+    const load = workerLoad.get(ctx.port) ?? 1;
+    workerLoad.set(ctx.port, load - 1);
+  },
+});
+```
+
+**Method-based shedding:**
+
+```javascript
+const interceptor = createThreadInterceptor({
+  domain: ".local",
+  canAccept: (ctx) => {
+    // Always accept GET, shed POST/PUT under load
+    if (ctx.method === "GET") return true;
+    return !isOverloaded();
+  },
+});
+```
+
 ### Hooks
 
 It's possible to set some simple **synchronous** functions as hooks:
 
+- `canAccept(ctx)` - See [Load Shedding](#load-shedding)
 - `onChannelCreation(from, to)`
 - `onServerRequest(req, cb)`
 - `onServerResponse(req, res)`
