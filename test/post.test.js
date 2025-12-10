@@ -15,7 +15,7 @@ test('POST', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -39,7 +39,7 @@ test('POST with Stream', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -63,7 +63,7 @@ test('POST with Stream that errors', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -95,7 +95,7 @@ test('POST with buffer stream', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -120,7 +120,7 @@ test.skip('POST errors with streams of objects', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -141,7 +141,7 @@ test('correctly handles aborted requests', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 

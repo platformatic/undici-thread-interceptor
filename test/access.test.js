@@ -24,9 +24,9 @@ test('should not forward routes if asked to via hooks', async t => {
     }
   })
 
-  interceptor.route('worker-1', worker1)
-  interceptor.route('worker-2', worker2)
-  interceptor.route('worker-3', worker3)
+  await interceptor.route('worker-1', worker1)
+  await interceptor.route('worker-2', worker2)
+  await interceptor.route('worker-3', worker3)
 
   const agent = new Agent().compose(interceptor)
 

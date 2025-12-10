@@ -1,7 +1,7 @@
 'use strict'
 
 const { test } = require('node:test')
-const { deepStrictEqual, rejects, strictEqual, throws } = require('node:assert')
+const { deepStrictEqual, rejects, strictEqual } = require('node:assert')
 const { join } = require('path')
 const { Worker } = require('worker_threads')
 const { createThreadInterceptor } = require('../')
@@ -20,7 +20,7 @@ test('round-robin .route with array', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', [worker1, worker2])
+  await interceptor.route('myserver', [worker1, worker2])
 
   const agent = new Agent().compose(interceptor)
 
@@ -52,8 +52,8 @@ test('round-robin multiple .route', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -85,8 +85,8 @@ test('round-robin one worker exits', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -123,8 +123,8 @@ test('round-robin one worker exits, in flight request', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -156,12 +156,13 @@ test('round-robin one worker is using network', async t => {
   t.after(() => worker3.terminate())
 
   const interceptor = createThreadInterceptor({ domain: '.local' })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver', worker2)
-  interceptor.route('myserver', worker3)
+  const p1 = interceptor.route('myserver', worker1)
+  const p2 = interceptor.route('myserver', worker2)
+  const p3 = interceptor.route('myserver', worker3)
 
   // Wait for the second worker to advertise its port
   await once(worker2, 'message')
+  await Promise.all([p1, p2, p3])
 
   const responses = []
   for (let i = 0; i < 3; i++) {
@@ -194,7 +195,7 @@ test('503 status code retries it', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', [worker1, worker2])
+  await interceptor.route('myserver', [worker1, worker2])
 
   const agent = new Agent().compose(interceptor, interceptors.retry())
 
@@ -228,8 +229,8 @@ test('round-robin multiple add/remove operations', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.addRoute('myserver', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.addRoute('myserver', worker2)
 
   const agent = new Agent().compose(interceptor)
   async function whoami (expectedWorker) {
@@ -248,7 +249,7 @@ test('round-robin multiple add/remove operations', async t => {
   await whoami(worker2)
   await whoami(worker2)
 
-  interceptor.route('myserver', worker1)
+  await interceptor.route('myserver', worker1)
   // This should be a no-op since the worker is already in the round-robin
   interceptor.addRoute('myserver', worker2)
 
@@ -264,7 +265,7 @@ test('round-robin multiple add/remove operations', async t => {
 
   await interceptor.close()
 
-  await throws(() => interceptor.route('myserver', worker1), { message: 'The dispatcher has been closed.' })
-  await throws(() => interceptor.unroute('myserver', worker1), { message: 'The dispatcher has been closed.' })
+  await rejects(() => interceptor.route('myserver', worker1), { message: 'The dispatcher has been closed.' })
+  await rejects(() => interceptor.unroute('myserver', worker1), { message: 'The dispatcher has been closed.' })
   await interceptor.unroute('myserver', worker1, true)
 })

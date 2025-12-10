@@ -2,7 +2,7 @@
 
 const autocannon = require('autocannon')
 const { test } = require('node:test')
-const { deepStrictEqual, strictEqual, rejects, throws } = require('node:assert')
+const { deepStrictEqual, strictEqual, rejects } = require('node:assert')
 const { join } = require('path')
 const { Worker } = require('worker_threads')
 const { Agent, request } = require('undici')
@@ -18,7 +18,7 @@ test('graceful close from the main thread', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -54,8 +54,8 @@ test('graceful close from the different threads', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('composer', composer)
-  interceptor.route('myserver', worker)
+  await interceptor.route('composer', composer)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -104,8 +104,8 @@ test('no requests are lost if two threads are swapped in the same iteration of t
   const workers = [worker]
 
   const interceptor = createThreadInterceptor({ domain: '.local' })
-  interceptor.route('composer', composer)
-  interceptor.route('myserver', workers[0])
+  await interceptor.route('composer', composer)
+  await interceptor.route('myserver', workers[0])
 
   // Hammer the cluster with the requests
   const { port } = await waitMessage(composer, message => message.type === 'port')
@@ -126,12 +126,12 @@ test('no requests are lost if two threads are swapped in the same iteration of t
   })
 
   // Every 500ms, swap the worker
-  const interval = setInterval(() => {
+  const interval = setInterval(async () => {
     const newWorker = new Worker(join(__dirname, 'fixtures', 'graceful-close.js'))
     t.after(() => newWorker.terminate())
     workers.unshift(newWorker)
 
-    interceptor.route('myserver', workers[0])
+    await interceptor.route('myserver', workers[0])
     workers[1].postMessage('close')
   }, 500)
 
@@ -148,7 +148,7 @@ test('routes are rejected if the dispatcher is closed', async t => {
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker1)
+  await interceptor.route('myserver', worker1)
 
   const agent = new Agent().compose(interceptor)
 
@@ -164,13 +164,15 @@ test('routes are rejected if the dispatcher is closed', async t => {
     message: 'No target found for myserver.local in thread 0.'
   })
 
-  await throws(() => interceptor.route('myserver', worker1), { message: 'The dispatcher has been closed.' })
+  await rejects(() => interceptor.route('myserver', worker1),
+    { message: 'The dispatcher has been closed.' }
+  )
 
   interceptor.restart()
 
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker2.terminate())
-  interceptor.route('myserver', worker2)
+  await interceptor.route('myserver', worker2)
 
   {
     const { statusCode, body } = await request('http://myserver.local', { dispatcher: agent })

@@ -1,30 +1,31 @@
 'use strict'
 
 const { test } = require('node:test')
-const { Readable } = require('node:stream')
-const { deepStrictEqual, strictEqual, rejects, ifError } = require('node:assert')
 const { join } = require('node:path')
-const { Worker } = require('node:worker_threads')
 const { once } = require('node:events')
+const { Readable } = require('node:stream')
+const { readFile } = require('node:fs/promises')
+const { deepStrictEqual, strictEqual, rejects, ifError, ok } = require('node:assert')
+const { Worker } = require('node:worker_threads')
 const { setTimeout: sleep } = require('node:timers/promises')
-const { createThreadInterceptor } = require('../')
 const { Agent, request } = require('undici')
-const { readFile } = require('node:fs').promises
 const Fastify = require('fastify')
+const { requestWithTimeout } = require('./helper')
+const { createThreadInterceptor } = require('../')
 
 test('basic', async (t) => {
   const worker = new Worker(join(__dirname, 'fixtures', 'worker1.js'))
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, body } = await request('http://myserver.local', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
@@ -33,22 +34,22 @@ test('basic', async (t) => {
 
 test('two service in a mesh', async (t) => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
-    workerData: { message: 'mesh' },
+    workerData: { message: 'mesh' }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker2.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
   const { body } = await request('http://myserver2.local', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   deepStrictEqual(await body.json(), { hello: 'mesh' })
@@ -56,47 +57,47 @@ test('two service in a mesh', async (t) => {
 
 test('two service in a mesh, one is terminated with an inflight message', async (t) => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
-    workerData: { message: 'mesh' },
+    workerData: { message: 'mesh' }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker2.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
   worker1.terminate()
 
   const res = await request('http://myserver2.local', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(res.statusCode, 500)
   deepStrictEqual(await res.body.json(), {
     error: 'Internal Server Error',
     message: 'The target worker thread has exited before sending a response.',
-    statusCode: 500,
+    statusCode: 500
   })
 })
 
 test('two service in a mesh, one is terminated, then a message is sent', async (t) => {
   const worker1 = new Worker(join(__dirname, 'fixtures', 'worker1.js'), {
-    workerData: { message: 'mesh' },
+    workerData: { message: 'mesh' }
   })
   t.after(() => worker1.terminate())
   const worker2 = new Worker(join(__dirname, 'fixtures', 'worker2.js'))
   t.after(() => worker2.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -106,14 +107,14 @@ test('two service in a mesh, one is terminated, then a message is sent', async (
   await sleep(1000)
 
   const res = await request('http://myserver2.local', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(res.statusCode, 500)
   deepStrictEqual(await res.body.json(), {
     error: 'Internal Server Error',
     message: `No target found for myserver.local in thread ${worker2.threadId}.`,
-    statusCode: 500,
+    statusCode: 500
   })
 })
 
@@ -122,14 +123,14 @@ test('buffer', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, body } = await request('http://myserver.local/buffer', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
@@ -141,14 +142,14 @@ test('no response headers', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, headers, body } = await request('http://myserver.local/no-headers', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
@@ -161,14 +162,14 @@ test('handle errors from inject', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   await rejects(request('http://myserver.local', {
-    dispatcher: agent,
+    dispatcher: agent
   }), new Error('kaboom'))
 })
 
@@ -177,15 +178,16 @@ test('throws an error when no server is wired', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
   interceptor.route('myserver', worker)
+  await sleep(1000)
 
   const agent = new Agent().compose(interceptor)
 
   await rejects(request('http://myserver.local', {
-    dispatcher: agent,
-  }), new Error(`No responding server found for myserver.local in thread ${worker.threadId}.`))
+    dispatcher: agent
+  }), new Error('No target found for myserver.local in thread 0.'))
 })
 
 test('pass through with domain', async (t) => {
@@ -197,13 +199,13 @@ test('pass through with domain', async (t) => {
   t.after(() => app.close())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, body } = await request(app.listeningOrigin, {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
@@ -215,9 +217,9 @@ test('unwanted headers are removed', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -225,16 +227,16 @@ test('unwanted headers are removed', async (t) => {
     headers: {
       'x-foo': 'bar',
       connection: 'keep-alive',
-      'transfer-encoding': 'chunked',
+      'transfer-encoding': 'chunked'
     },
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
   deepStrictEqual(await body.json(), {
     'user-agent': 'lightMyRequest',
     host: 'myserver.local',
-    'x-foo': 'bar',
+    'x-foo': 'bar'
   })
 })
 
@@ -244,14 +246,14 @@ test('multiple headers', { skip: true }, async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, body, headers } = await request('http://myserver.local/headers', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
@@ -264,10 +266,10 @@ test('case-insensitive hostnames', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('mySERver', worker)
-  interceptor.route('MySeRvEr2', worker)
+  await interceptor.route('mySERver', worker)
+  await interceptor.route('MySeRvEr2', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -277,7 +279,7 @@ test('case-insensitive hostnames', async (t) => {
     'http://MYserVER.locAL',
     'http://myserver2.local',
     'http://MYSERVER2.local',
-    'http://MYserVER2.locAL',
+    'http://MYserVER2.locAL'
   ]
 
   for (const url of urls) {
@@ -293,10 +295,10 @@ test('close', async (t) => {
   const worker2 = new Worker(join(__dirname, 'fixtures', 'close.js'))
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -327,9 +329,9 @@ test('POST', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -337,9 +339,9 @@ test('POST', async (t) => {
     dispatcher: agent,
     method: 'POST',
     headers: {
-      'content-type': 'application/json',
+      'content-type': 'application/json'
     },
-    body: JSON.stringify({ hello: 'world' }),
+    body: JSON.stringify({ hello: 'world' })
   })
 
   strictEqual(statusCode, 200)
@@ -351,9 +353,9 @@ test('POST with Stream', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -361,9 +363,9 @@ test('POST with Stream', async (t) => {
     dispatcher: agent,
     method: 'POST',
     headers: {
-      'content-type': 'application/json',
+      'content-type': 'application/json'
     },
-    body: Readable.from(JSON.stringify({ hello: 'world' })),
+    body: Readable.from(JSON.stringify({ hello: 'world' }))
   })
 
   strictEqual(statusCode, 200)
@@ -375,9 +377,9 @@ test('POST with buffer', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -385,9 +387,9 @@ test('POST with buffer', async (t) => {
     dispatcher: agent,
     method: 'POST',
     headers: {
-      'content-type': 'application/json',
+      'content-type': 'application/json'
     },
-    body: Buffer.from(JSON.stringify({ hello: 'world' })),
+    body: Buffer.from(JSON.stringify({ hello: 'world' }))
   })
 
   strictEqual(statusCode, 200)
@@ -399,14 +401,14 @@ test('Get binary file', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, body } = await request('http://myserver.local/public/test.ttf', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
@@ -422,9 +424,9 @@ test('aborting a request', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const abortController = new AbortController()
 
@@ -433,7 +435,7 @@ test('aborting a request', async (t) => {
 
   await rejects(request('http://myserver.local', {
     dispatcher: agent,
-    signal: abortController.signal,
+    signal: abortController.signal
   }))
 })
 
@@ -442,9 +444,9 @@ test('empty header', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -462,14 +464,14 @@ test('big stream using backpressure', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, body } = await request('http://myserver.local/big', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
@@ -491,14 +493,14 @@ test('handles an error within a stream response with a content length', async (t
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   await rejects(request('http://myserver.local/stream-error', {
-    dispatcher: agent,
+    dispatcher: agent
   }))
 })
 
@@ -507,14 +509,14 @@ test('handle an error with a stream response response without content length', a
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const res = await request('http://myserver.local/stream-error-2', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(res.statusCode, 200)
@@ -526,16 +528,373 @@ test('empty-stream', async (t) => {
   t.after(() => worker.terminate())
 
   const interceptor = createThreadInterceptor({
-    domain: '.local',
+    domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
   const { statusCode, body } = await request('http://myserver.local/empty-stream', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   strictEqual(statusCode, 200)
   deepStrictEqual(await body.text(), '')
+})
+
+test('should not use port that does not have server', async (t) => {
+  const worker1 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 1 }
+  })
+  const worker2 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 2 }
+  })
+  const worker3 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 3 }
+  })
+
+  t.after(() => {
+    worker1.terminate()
+    worker2.terminate()
+    worker3.terminate()
+  })
+
+  const interceptor = createThreadInterceptor({ domain: '.local' })
+
+  worker1.postMessage('test-wire')
+  worker2.postMessage('test-wire')
+  worker3.postMessage('test-wire')
+  await sleep(200)
+
+  const p1 = interceptor.route('app1', worker1)
+  const p2 = interceptor.route('app1', worker2)
+  const p3 = interceptor.route('app2', worker3)
+
+  worker1.postMessage('test-replace-server')
+  worker3.postMessage('test-replace-server')
+  await Promise.all([p1, p3])
+
+  const agent = new Agent().compose(interceptor)
+
+  // Request Main -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 doesn't have server
+  for (let i = 0; i < 4; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app1.local/id',
+      {
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { id } = await body.json()
+    strictEqual(id, 1)
+  }
+
+  // Request Main -> App2 -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 doesn't have server
+  for (let i = 0; i < 4; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app2.local/request',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'http://app1.local/id' }),
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { data } = await body.json()
+    const { id } = JSON.parse(data)
+    strictEqual(id, 1)
+  }
+
+  // Set server for Worker2
+  worker2.postMessage('test-replace-server')
+  await p2
+  await sleep(1000)
+
+  // Request Main -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 has server
+  let expected = null
+  for (let i = 0; i < 4; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app1.local/id',
+      {
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { id } = await body.json()
+    if (i === 0) {
+      expected = id
+      continue
+    }
+
+    expected = expected === 1 ? 2 : 1
+    strictEqual(id, expected)
+  }
+
+  // Request Main -> App2 -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 has server
+  for (let i = 0; i < 7; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app2.local/request',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'http://app1.local/id' }),
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { data } = await body.json()
+    const { id } = JSON.parse(data)
+    if (i === 0) {
+      expected = id
+      continue
+    }
+    expected = expected === 1 ? 2 : 1
+    strictEqual(id, expected)
+  }
+})
+
+test('should not use port that does not have server', async (t) => {
+  const worker1 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 1 }
+  })
+  const worker2 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 2 }
+  })
+  const worker3 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 3 }
+  })
+
+  t.after(() => {
+    worker1.terminate()
+    worker2.terminate()
+    worker3.terminate()
+  })
+
+  const interceptor = createThreadInterceptor({ domain: '.local' })
+
+  worker1.postMessage('test-wire')
+  worker2.postMessage('test-wire')
+  worker3.postMessage('test-wire')
+
+  worker1.postMessage('test-replace-server')
+  worker3.postMessage('test-replace-server')
+  await sleep(1000)
+
+  const p1 = interceptor.route('app1', worker1)
+  const p2 = interceptor.route('app1', worker2)
+  const p3 = interceptor.route('app2', worker3)
+  await Promise.all([p1, p3])
+
+  const agent = new Agent().compose(interceptor)
+
+  // Request Main -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 doesn't have server
+  for (let i = 0; i < 2; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app1.local/id',
+      {
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { id } = await body.json()
+    strictEqual(id, 1)
+  }
+
+  // Request Main -> App2 -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 doesn't have server
+  for (let i = 0; i < 2; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app2.local/request',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'http://app1.local/id' }),
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { data } = await body.json()
+    const { id } = JSON.parse(data)
+    strictEqual(id, 1)
+  }
+
+  // Set server for Worker2
+  worker2.postMessage('test-replace-server')
+  await p2
+
+  // Request Main -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 has server
+  let expected = null
+  for (let i = 0; i < 4; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app1.local/id',
+      {
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { id } = await body.json()
+    if (i === 0) {
+      expected = id
+      continue
+    }
+    expected = expected === 1 ? 2 : 1
+    strictEqual(id, expected)
+  }
+
+  // Request Main -> App2 -> App1
+  // App1 has two workers: Worker1 and Worker2
+  // Worker1 has server
+  // Worker2 has server
+  for (let i = 0; i < 4; i++) {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app2.local/request',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'http://app1.local/id' }),
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+
+    strictEqual(statusCode, 200)
+
+    const { data } = await body.json()
+    const { id } = JSON.parse(data)
+    if (i === 0) {
+      expected = id
+      continue
+    }
+    expected = expected === 1 ? 2 : 1
+    strictEqual(id, expected)
+  }
+})
+
+test('mesh connections should work after removing and re-adding routes', async (t) => {
+  const worker1 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 1 }
+  })
+  const worker2 = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 2 }
+  })
+
+  t.after(() => {
+    worker1.terminate()
+    worker2.terminate()
+  })
+
+  const interceptor = createThreadInterceptor({ domain: '.local' })
+
+  worker1.postMessage('test-wire')
+  worker2.postMessage('test-wire')
+  worker1.postMessage('test-replace-server')
+  worker2.postMessage('test-replace-server')
+  await sleep(200)
+
+  const agent = new Agent().compose(interceptor)
+
+  // STEP 1: Add routes and test mesh works
+  await interceptor.route('app1', worker1)
+  await interceptor.route('app2', worker2)
+
+  {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app2.local/request',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'http://app1.local/id' }),
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+    strictEqual(statusCode, 200)
+    const { data } = await body.json()
+    const { id } = JSON.parse(data)
+    strictEqual(id, 1)
+  }
+
+  // STEP 2: Remove route and test it fails
+  await interceptor.unroute('app1', worker1)
+
+  {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app2.local/request',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'http://app1.local/id' }),
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+    strictEqual(statusCode, 500, 'should get error status after route removal')
+
+    const error = await body.json()
+    strictEqual(error.statusCode, 500)
+    strictEqual(error.error, 'Internal Server Error')
+    ok(error.message.includes('No target found for app1.local in thread'))
+  }
+
+  // STEP 3: Re-add route and test mesh works again
+  await interceptor.route('app1', worker1)
+
+  {
+    const { statusCode, body } = await requestWithTimeout(
+      'http://app2.local/request',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'http://app1.local/id' }),
+        dispatcher: agent,
+        timeout: 1000
+      }
+    )
+    strictEqual(statusCode, 200)
+    const { data } = await body.json()
+    const { id } = JSON.parse(data)
+    strictEqual(id, 1)
+  }
 })
