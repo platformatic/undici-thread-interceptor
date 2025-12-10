@@ -242,9 +242,9 @@ test('round-robin multiple add/remove operations', async t => {
   await whoami(worker1)
   await whoami(worker2)
 
-  interceptor.unroute('myserver', worker1)
+  await interceptor.unroute('myserver', worker1)
   // This should be a no-op since the worker no longer in the round-robin
-  interceptor.removeRoute('myserver', worker1)
+  await interceptor.removeRoute('myserver', worker1)
 
   await whoami(worker2)
   await whoami(worker2)
