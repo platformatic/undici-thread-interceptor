@@ -71,12 +71,13 @@ test('two service in a mesh, one is terminated with an inflight message', async 
 
   const agent = new Agent().compose(interceptor)
 
-  worker1.terminate()
-
-  const res = await request('http://myserver2.local', {
+  const promise = request('http://myserver2.local', {
     dispatcher: agent
   })
 
+  worker1.terminate()
+
+  const res = await promise
   strictEqual(res.statusCode, 500)
   deepStrictEqual(await res.body.json(), {
     error: 'Internal Server Error',
