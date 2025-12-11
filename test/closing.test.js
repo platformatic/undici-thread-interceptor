@@ -99,6 +99,8 @@ test('no requests are lost if two threads are swapped in the same iteration of t
   const composer = new Worker(join(__dirname, 'fixtures', 'composer.js'), { workerData: { network: true } })
   t.after(() => composer.terminate())
 
+  const portPromise = waitMessage(composer, message => message.type === 'port')
+
   const worker = new Worker(join(__dirname, 'fixtures', 'graceful-close.js'))
   t.after(() => worker.terminate())
   const workers = [worker]
@@ -108,7 +110,7 @@ test('no requests are lost if two threads are swapped in the same iteration of t
   await interceptor.route('myserver', workers[0])
 
   // Hammer the cluster with the requests
-  const { port } = await waitMessage(composer, message => message.type === 'port')
+  const { port } = await portPromise
 
   const resultsPromise = autocannon({
     url: `http://127.0.0.1:${port}/s1/ping`,
