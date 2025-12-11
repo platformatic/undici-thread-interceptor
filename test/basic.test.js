@@ -564,7 +564,6 @@ test('should not use port that does not have server', async (t) => {
   worker1.postMessage('test-wire')
   worker2.postMessage('test-wire')
   worker3.postMessage('test-wire')
-  await sleep(200)
 
   const p1 = interceptor.route('app1', worker1)
   const p2 = interceptor.route('app1', worker2)
@@ -703,7 +702,6 @@ test('should not use port that does not have server', async (t) => {
 
   worker1.postMessage('test-replace-server')
   worker3.postMessage('test-replace-server')
-  await sleep(1000)
 
   const p1 = interceptor.route('app1', worker1)
   const p2 = interceptor.route('app1', worker2)
@@ -831,7 +829,6 @@ test('mesh connections should work after removing and re-adding routes', async (
   worker2.postMessage('test-wire')
   worker1.postMessage('test-replace-server')
   worker2.postMessage('test-replace-server')
-  await sleep(200)
 
   const agent = new Agent().compose(interceptor)
 
