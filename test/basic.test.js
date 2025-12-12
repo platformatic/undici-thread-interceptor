@@ -923,3 +923,30 @@ test('should not wire a port that has been removed', async (t) => {
     dispatcher: agent
   }), new Error('No target found for app1.local in thread 0.'))
 })
+
+test('should not wire a port that has been closed', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 1 }
+  })
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({ domain: '.local' })
+
+  worker.postMessage('test-wire')
+
+  const routePromise = interceptor.route('app1', worker)
+  const closePromise = interceptor.close()
+
+  worker.postMessage('test-replace-server')
+  // Wait to be sure that replaceServer is called
+  await sleep(1000)
+
+  await routePromise
+  await closePromise
+
+  const agent = new Agent().compose(interceptor)
+
+  await rejects(request('http://app1.local/id', {
+    dispatcher: agent
+  }), new Error('No target found for app1.local in thread 0.'))
+})
