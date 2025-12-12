@@ -896,3 +896,30 @@ test('mesh connections should work after removing and re-adding routes', async (
     strictEqual(id, 1)
   }
 })
+
+test('should not wire a port that has been removed', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'timeout.js'), {
+    workerData: { id: 1 }
+  })
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({ domain: '.local' })
+
+  worker.postMessage('test-wire')
+
+  const routePromise = interceptor.route('app1', worker)
+  const unroutePromise = interceptor.unroute('app1', worker)
+
+  worker.postMessage('test-replace-server')
+  // Wait to be sure that replaceServer is called
+  await sleep(1000)
+
+  await routePromise
+  await unroutePromise
+
+  const agent = new Agent().compose(interceptor)
+
+  await rejects(request('http://app1.local/id', {
+    dispatcher: agent
+  }), new Error('No target found for app1.local in thread 0.'))
+})
