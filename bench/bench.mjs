@@ -8,15 +8,15 @@ const worker = new Worker(join(import.meta.dirname, '..', 'test', 'fixtures', 'w
 await once(worker, 'online')
 
 const interceptor = createThreadInterceptor({
-  domain: '.local',
+  domain: '.local'
 })
-interceptor.route('myserver', worker)
+await interceptor.route('myserver', worker)
 
 const agent = new Agent().compose(interceptor)
 
 async function performRequest () {
   const res = await request('http://myserver.local', {
-    dispatcher: agent,
+    dispatcher: agent
   })
 
   await res.body.text()

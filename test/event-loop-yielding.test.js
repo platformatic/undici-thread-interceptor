@@ -28,7 +28,7 @@ test('event loop yielding under high load', async (t) => {
     domain: '.local'
   })
 
-  interceptor.route('slowapi', worker)
+  await interceptor.route('slowapi', worker)
 
   const agent = new Agent().compose(interceptor)
 

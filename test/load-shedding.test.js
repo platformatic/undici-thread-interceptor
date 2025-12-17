@@ -152,7 +152,7 @@ test('load shedding - no canAccept hook uses normal round-robin', async (t) => {
     domain: '.local'
     // No canAccept hook
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 

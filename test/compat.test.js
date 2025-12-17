@@ -14,7 +14,7 @@ test('express', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -32,7 +32,7 @@ test('koa', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 

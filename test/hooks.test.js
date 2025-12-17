@@ -65,7 +65,7 @@ test('hooks - onClientRequest', async (t) => {
       hookCalledClient = opts
     },
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -95,7 +95,7 @@ test('hooks - onClientResponse', async (t) => {
       hookCalled = req.path
     }
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
   const { statusCode } = await request('http://myserver.local', {
@@ -117,7 +117,7 @@ test('hooks - onClientResponseEnd', async (t) => {
       hookCalled = true
     }
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
   const { statusCode } = await request('http://myserver.local', {
@@ -139,7 +139,7 @@ test('hooks - onClientError', async (t) => {
       hookCalled = error
     }
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   try {
     const agent = new Agent().compose(interceptor)
@@ -160,7 +160,7 @@ test('hooks - onServerRequest', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -185,7 +185,7 @@ test('hooks - onServerResponse', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -210,7 +210,7 @@ test('hooks - onServerError', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -233,7 +233,7 @@ test('hooks - request propagation between onServerRequest and onServerResponse',
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -265,7 +265,7 @@ test('hooks - request propagation between onClientRequest and onClientResponse',
       hookCalledClient = req.dataInRequest
     }
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -291,7 +291,7 @@ test('hooks - context propagation between onClientRequest and onClientResponse',
       hookCalledClient = ctx.data
     }
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -325,7 +325,7 @@ test('hooks - array of onClientRequest hooks', async (t) => {
       }
     ]
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -344,7 +344,7 @@ test('hooks - array of onServerRequest hooks with proper chaining', async (t) =>
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -382,7 +382,7 @@ test('hooks - array of onClientResponse hooks', async (t) => {
       }
     ]
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -414,7 +414,7 @@ test('hooks - mixed single and array hooks', async (t) => {
       }
     ]
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
