@@ -14,7 +14,7 @@ test('POST with Uint8Array body (fetch)', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const originalDispatcher = getGlobalDispatcher()
   setGlobalDispatcher(originalDispatcher.compose(interceptor))
