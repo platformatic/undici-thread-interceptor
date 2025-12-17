@@ -311,6 +311,12 @@ When routes are modified:
 2. MessageChannels are established or torn down as needed
 3. The mesh network maintains consistency across all threads
 
+The `interceptor.route` method returns a promise that resolves when the worker is ready to handle requests.
+The worker is considered ready when it has called `wire` or `replaceServer` with a non-null server value.
+
+The `interceptor.unroute` method returns a promise that resolves when the worker is processed
+all inflight requests and worker route is removed from all connected interceptors.
+
 ### Network Address Support
 
 Workers can also proxy to network addresses instead of handling requests directly:
