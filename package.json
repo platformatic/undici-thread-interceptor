@@ -23,7 +23,7 @@
   },
   "homepage": "https://github.com/platformatic/undici-thread-interceptor#readme",
   "devDependencies": {
-    "@fastify/static": "^8.0.2",
+    "@fastify/static": "^9.0.0",
     "atomic-sleep": "^1.0.0",
     "autocannon": "^8.0.0",
     "borp": "^0.20.0",
