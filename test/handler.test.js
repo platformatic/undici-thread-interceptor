@@ -65,7 +65,7 @@ test('support undici v7 handler interface', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const testInterceptor = dispatch => {
     return function TestDispatch (opts, handler) {
@@ -93,7 +93,7 @@ test('support undici v6 handler interface', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = getGlobalDispatcher()
     .compose(interceptor)
@@ -120,7 +120,7 @@ test('503 status code re-tries it with undici v6 GD', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', [worker1, worker2])
+  await interceptor.route('myserver', [worker1, worker2])
 
   const agent = getGlobalDispatcher().compose(interceptor, interceptors.retry())
 

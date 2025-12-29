@@ -19,8 +19,8 @@ test('service restart with network / 1', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -51,7 +51,7 @@ test('service restart with network / 1', async (t) => {
   const worker2bis = new Worker(join(__dirname, 'fixtures', 'network-crash.js'))
   t.after(() => worker2bis.terminate())
 
-  interceptor.route('myserver2', worker2bis)
+  await interceptor.route('myserver2', worker2bis)
 
   await sleep(2000)
 
@@ -91,9 +91,9 @@ test('service restart with network / 2', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('composer', composer)
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('composer', composer)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -130,7 +130,7 @@ test('service restart with network / 2', async (t) => {
   })
   t.after(() => worker2bis.terminate())
 
-  interceptor.route('myserver2', worker2bis)
+  await interceptor.route('myserver2', worker2bis)
 
   await sleep(2000)
 
@@ -166,8 +166,8 @@ test('service restart with network / 3', async (t) => {
   const interceptor = createThreadInterceptor({
     domain: '.local',
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
@@ -191,14 +191,14 @@ test('service restart with network / 3', async (t) => {
   })
   t.after(() => worker2bis.terminate())
 
-  interceptor.route('myserver2', worker2bis)
+  await interceptor.route('myserver2', worker2bis)
 
   const composer = new Worker(join(__dirname, 'fixtures', 'composer.js'), {
     workerData: { name: 'composer' },
   })
   t.after(() => composer.terminate())
 
-  interceptor.route('composer', composer)
+  await interceptor.route('composer', composer)
 
   await sleep(2000)
 

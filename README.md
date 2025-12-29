@@ -29,7 +29,7 @@ const interceptor = createThreadInterceptor({
   domain: ".local", // The prefix for all local domains
 });
 
-interceptor.route("myserver", worker); // This method is also aliased as addRoute
+await interceptor.route("myserver", worker); // This method is also aliased as addRoute
 
 const agent = new Agent().compose(interceptor);
 
@@ -147,11 +147,11 @@ const interceptor = createThreadInterceptor({
   domain: ".local", // The prefix for all local domains
 });
 
-interceptor.route("myserver", worker); // This method is also aliased as addRoute
+await interceptor.route("myserver", worker); // This method is also aliased as addRoute
 
 // ...
 
-interceptor.unroute("myserver", worker); // This method is also aliased as removeRoute
+await interceptor.unroute("myserver", worker); // This method is also aliased as removeRoute
 
 // ...
 ```
@@ -231,18 +231,20 @@ Each hostname can have multiple worker threads, and the system uses round-robin 
 
 ```javascript
 // Multiple workers for the same hostname
-interceptor.route("api", worker1);
-interceptor.route("api", worker2);  
-interceptor.route("api", worker3);
+await interceptor.route("api", worker1);
+await interceptor.route("api", worker2);
+await interceptor.route("api", worker3);
 
 // Requests to api.local will be distributed:
 // Request 1 -> worker1
-// Request 2 -> worker2  
+// Request 2 -> worker2
 // Request 3 -> worker3
 // Request 4 -> worker1 (cycles back)
 ```
 
 The RoundRobin class maintains an index that automatically advances with each request, ensuring even distribution across all available workers.
+
+**Worker Readiness:** The round-robin selector only considers workers that are fully initialized and ready to handle requests. Workers signal their readiness after calling `wire()` and setting up their server. This prevents requests from being routed to workers that haven't finished initialization.
 
 ### Mesh Networking Between Workers
 
@@ -295,10 +297,10 @@ Routes can be added and removed dynamically during runtime:
 
 ```javascript
 // Add a route
-interceptor.route("newservice", workerThread);
+await interceptor.route("newservice", workerThread);
 
-// Remove a specific worker from a route  
-interceptor.unroute("newservice", workerThread);
+// Remove a specific worker from a route
+await interceptor.unroute("newservice", workerThread);
 
 // The mesh network automatically updates
 // All other workers are notified of changes
@@ -308,6 +310,12 @@ When routes are modified:
 1. The coordinator notifies all existing workers about the change
 2. MessageChannels are established or torn down as needed
 3. The mesh network maintains consistency across all threads
+
+The `interceptor.route` method returns a promise that resolves when the worker is ready to handle requests.
+The worker is considered ready when it has called `wire` or `replaceServer` with a non-null server value.
+
+The `interceptor.unroute` method returns a promise that resolves when the worker is processed
+all inflight requests and worker route is removed from all connected interceptors.
 
 ### Network Address Support
 
@@ -366,7 +374,7 @@ const interceptor = createThreadInterceptor({
   domain: ".local",
   onClientRequest: (req) => console.log("onClientRequest called", req),
 });
-interceptor.route("myserver", worker);
+await interceptor.route("myserver", worker);
 
 const agent = new Agent().compose(interceptor);
 

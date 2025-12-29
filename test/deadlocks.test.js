@@ -14,7 +14,7 @@ test('should not deadlock if a thread exits while the coordinator is issuing clo
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker)
+  await interceptor.route('myserver', worker)
 
   const agent = new Agent().compose(interceptor)
 
@@ -43,8 +43,8 @@ test('should not deadlock if a thread exits before sending remove acknowledgemen
   const interceptor = createThreadInterceptor({
     domain: '.local'
   })
-  interceptor.route('myserver', worker1)
-  interceptor.route('myserver2', worker2)
+  await interceptor.route('myserver', worker1)
+  await interceptor.route('myserver2', worker2)
 
   const agent = new Agent().compose(interceptor)
 
