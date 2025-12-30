@@ -1,7 +1,7 @@
 'use strict'
 
 const { test } = require('node:test')
-const { deepStrictEqual, strictEqual, rejects } = require('node:assert')
+const { deepStrictEqual, strictEqual, rejects, ok } = require('node:assert')
 const { join } = require('node:path')
 const { Worker } = require('node:worker_threads')
 const { createThreadInterceptor } = require('../')
@@ -640,4 +640,143 @@ test('hooks - context propagation for non-serializable data with network address
   // Verify response info is available
   strictEqual(capturedRes.statusCode, 200)
   strictEqual(typeof capturedRes.headers, 'object')
+})
+
+// Unit tests for helper functions to ensure coverage of array-valued header handling
+test('createRequestWrapper - handles array-valued headers', (t) => {
+  const { createRequestWrapper } = require('../lib/hooks')
+
+  const req = {
+    origin: 'http://example.com',
+    method: 'POST',
+    path: '/test',
+    headers: {
+      host: 'example.com',
+      accept: ['application/json', 'text/plain'],
+      'x-custom': ['value1', 'value2', 'value3']
+    }
+  }
+
+  const wrapped = createRequestWrapper(req)
+
+  // Verify exact array content, ordering, and key-value alternation
+  // Array-valued headers must repeat the key for each value
+  deepStrictEqual(wrapped.headers, [
+    'host', 'example.com',
+    'accept', 'application/json',
+    'accept', 'text/plain',
+    'x-custom', 'value1',
+    'x-custom', 'value2',
+    'x-custom', 'value3'
+  ])
+})
+
+test('convertResponseHeaders - handles array-valued headers', (t) => {
+  const { convertResponseHeaders } = require('../lib/hooks')
+
+  const headers = {
+    'content-type': 'application/json',
+    'set-cookie': ['session=abc123', 'token=xyz789'],
+    'x-custom': ['val1', 'val2']
+  }
+
+  const result = convertResponseHeaders(headers)
+
+  // Verify exact array content, ordering, and key-value alternation
+  // Array-valued headers must repeat the key for each value
+  deepStrictEqual(result, [
+    'content-type', 'application/json',
+    'set-cookie', 'session=abc123',
+    'set-cookie', 'token=xyz789',
+    'x-custom', 'val1',
+    'x-custom', 'val2'
+  ])
+})
+
+test('createRequestWrapper - handles missing method and host', (t) => {
+  const { createRequestWrapper } = require('../lib/hooks')
+
+  const req = {
+    origin: 'http://example.com',
+    path: '/test'
+    // No method, no headers
+  }
+
+  const wrapped = createRequestWrapper(req)
+
+  // Should default method to 'GET'
+  strictEqual(wrapped.method, 'GET', 'Should default to GET method')
+  // Should use originUrl.host when no host header
+  strictEqual(wrapped.host, 'example.com', 'Should use origin host when no host header')
+  // Should handle missing headers gracefully
+  ok(Array.isArray(wrapped.headers), 'Should have headers array')
+})
+
+test('createRequestWrapper - addHeader method works correctly', (t) => {
+  const { createRequestWrapper } = require('../lib/hooks')
+
+  const req = {
+    origin: 'http://example.com',
+    method: 'GET',
+    path: '/test',
+    headers: {
+      host: 'example.com'
+    }
+  }
+
+  const wrapped = createRequestWrapper(req)
+
+  // Test addHeader method
+  wrapped.addHeader('x-trace-id', '123456')
+
+  // Verify exact array content with proper key-value alternation
+  deepStrictEqual(wrapped.headers, [
+    'host', 'example.com',
+    'x-trace-id', '123456'
+  ])
+
+  // Should also update original request headers
+  strictEqual(req.headers['x-trace-id'], '123456', 'Should update original request headers')
+})
+
+test('createRequestWrapper - addHeader initializes headers if missing', (t) => {
+  const { createRequestWrapper } = require('../lib/hooks')
+
+  const req = {
+    origin: 'http://example.com',
+    method: 'GET',
+    path: '/test'
+    // No headers property at all
+  }
+
+  const wrapped = createRequestWrapper(req)
+
+  // Test addHeader method when req.headers is undefined
+  wrapped.addHeader('x-trace-id', '123456')
+
+  // Should initialize req.headers object
+  ok(req.headers, 'Should initialize headers object')
+  strictEqual(req.headers['x-trace-id'], '123456', 'Should add header to initialized object')
+
+  // Verify exact array content with proper key-value alternation
+  deepStrictEqual(wrapped.headers, [
+    'x-trace-id', '123456'
+  ])
+})
+
+test('convertResponseHeaders - handles null, undefined, and array inputs', (t) => {
+  const { convertResponseHeaders } = require('../lib/hooks')
+
+  // Test null headers
+  let result = convertResponseHeaders(null)
+  deepStrictEqual(result, [], 'Should return empty array for null')
+
+  // Test undefined headers
+  result = convertResponseHeaders(undefined)
+  deepStrictEqual(result, [], 'Should return empty array for undefined')
+
+  // Test headers already in array format
+  const arrayHeaders = ['content-type', 'application/json', 'x-custom', 'value']
+  result = convertResponseHeaders(arrayHeaders)
+  strictEqual(result, arrayHeaders, 'Should return same array if already in array format')
 })
