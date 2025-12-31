@@ -262,3 +262,181 @@ test('undici OTel instrumentation handles multi-value headers', async (t) => {
   // The test passing means both createRequestWrapper and convertResponseHeaders successfully
   // processed the array-valued headers without throwing errors
 })
+
+test('undici OTel instrumentation produces only one span for network address requests', async (t) => {
+  const { setTimeout: sleep } = require('node:timers/promises')
+
+  // Set up OTel provider and exporter BEFORE creating any interceptors
+  const memoryExporter = new InMemorySpanExporter()
+  const provider = new BasicTracerProvider({
+    spanProcessors: [new SimpleSpanProcessor(memoryExporter)]
+  })
+  trace.setGlobalTracerProvider(provider)
+
+  // Enable undici instrumentation BEFORE creating thread interceptor
+  const undiciInstrumentation = new UndiciInstrumentation()
+  undiciInstrumentation.setTracerProvider(provider)
+  undiciInstrumentation.enable()
+
+  t.after(() => {
+    undiciInstrumentation.disable()
+    provider.shutdown()
+  })
+
+  // Set up worker with network address support (routes back to undici dispatcher)
+  const worker = new Worker(join(__dirname, 'fixtures', 'network.js'), {
+    workerData: { network: true }
+  })
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local'
+  })
+  await interceptor.route('myserver', worker)
+
+  // Wait for worker to advertise its network address
+  await sleep(1000)
+
+  const agent = new Agent().compose(interceptor)
+
+  // Make a request through the intercepted agent with network address
+  const { statusCode, body } = await request('http://myserver.local/', {
+    dispatcher: agent
+  })
+
+  await body.json()
+  strictEqual(statusCode, 200)
+
+  // Force export of any pending spans
+  await provider.forceFlush()
+
+  // Get spans from memory exporter
+  const spans = memoryExporter.getFinishedSpans()
+  console.log('Total spans created:', spans.length)
+  console.log('Span names:', spans.map(s => s.name))
+  console.log('Span kinds:', spans.map(s => s.kind))
+  console.log('Span attributes:', spans.map(s => s.attributes))
+
+  // Filter client spans (the request spans created by undici OTel instrumentation)
+  const clientSpans = spans.filter(s => s.kind === SpanKind.CLIENT)
+
+  // CRITICAL: Should have exactly ONE CLIENT span, not duplicates
+  // Before the fix, we would get 2 spans:
+  // 1. From the thread interceptor hooks emitting diagnostics_channel events
+  // 2. From undici itself when routing to the network address
+  // After the fix, skipDiagnosticsChannel prevents the duplicate
+  strictEqual(
+    clientSpans.length,
+    1,
+    `Should have exactly one CLIENT span for network address request, got ${clientSpans.length}`
+  )
+
+  const clientSpan = clientSpans[0]
+  console.log('Client span name:', clientSpan.name)
+  console.log('Client span attributes:', clientSpan.attributes)
+
+  // Verify the span has proper attributes
+  ok(
+    clientSpan.attributes['http.request.method'] || clientSpan.attributes['http.method'],
+    'Should have HTTP method attribute'
+  )
+  ok(
+    clientSpan.attributes['url.full'] || clientSpan.attributes['http.url'],
+    'Should have URL attribute'
+  )
+  ok(
+    clientSpan.attributes['http.response.status_code'] || clientSpan.attributes['http.status_code'],
+    'Should have response status code attribute'
+  )
+})
+
+test('undici OTel - network address skips diagnostics_channel events from hooks', async (t) => {
+  const { setTimeout: sleep } = require('node:timers/promises')
+  const diagnosticsChannel = require('node:diagnostics_channel')
+
+  // Track diagnostics_channel events
+  const events = {
+    create: [],
+    headers: [],
+    trailers: [],
+    error: []
+  }
+
+  const createChannel = diagnosticsChannel.channel('undici:request:create')
+  const headersChannel = diagnosticsChannel.channel('undici:request:headers')
+  const trailersChannel = diagnosticsChannel.channel('undici:request:trailers')
+  const errorChannel = diagnosticsChannel.channel('undici:request:error')
+
+  const createSub = createChannel.subscribe((msg) => events.create.push(msg))
+  const headersSub = headersChannel.subscribe((msg) => events.headers.push(msg))
+  const trailersSub = trailersChannel.subscribe((msg) => events.trailers.push(msg))
+  const errorSub = errorChannel.subscribe((msg) => events.error.push(msg))
+
+  t.after(() => {
+    createChannel.unsubscribe(createSub)
+    headersChannel.unsubscribe(headersSub)
+    trailersChannel.unsubscribe(trailersSub)
+    errorChannel.unsubscribe(errorSub)
+  })
+
+  // Set up OTel provider
+  const memoryExporter = new InMemorySpanExporter()
+  const provider = new BasicTracerProvider({
+    spanProcessors: [new SimpleSpanProcessor(memoryExporter)]
+  })
+  trace.setGlobalTracerProvider(provider)
+
+  const undiciInstrumentation = new UndiciInstrumentation()
+  undiciInstrumentation.setTracerProvider(provider)
+  undiciInstrumentation.enable()
+
+  t.after(() => {
+    undiciInstrumentation.disable()
+    provider.shutdown()
+  })
+
+  // Set up worker with network address support
+  const worker = new Worker(join(__dirname, 'fixtures', 'network.js'), {
+    workerData: { network: true }
+  })
+  t.after(() => worker.terminate())
+
+  const interceptor = createThreadInterceptor({
+    domain: '.local'
+  })
+  await interceptor.route('myserver', worker)
+
+  await sleep(1000)
+
+  const agent = new Agent().compose(interceptor)
+
+  // Make a request through network address
+  const { statusCode, body } = await request('http://myserver.local/', {
+    dispatcher: agent
+  })
+
+  await body.json()
+  strictEqual(statusCode, 200)
+
+  await provider.forceFlush()
+
+  // The key assertion: diagnostics_channel events should only be emitted ONCE
+  // by undici itself (when it makes the network request), NOT twice
+  // (hooks should skip emitting when skipDiagnosticsChannel is true)
+  console.log('diagnostics_channel events:', {
+    create: events.create.length,
+    headers: events.headers.length,
+    trailers: events.trailers.length
+  })
+
+  // Each event type should appear exactly once (from undici's network request)
+  // not twice (would indicate hooks incorrectly emitted events)
+  strictEqual(events.create.length, 1, 'Should have exactly one create event')
+  strictEqual(events.headers.length, 1, 'Should have exactly one headers event')
+  strictEqual(events.trailers.length, 1, 'Should have exactly one trailers event')
+
+  // Verify only one span was created
+  const spans = memoryExporter.getFinishedSpans()
+  const clientSpans = spans.filter(s => s.kind === SpanKind.CLIENT)
+  strictEqual(clientSpans.length, 1, 'Should have exactly one CLIENT span')
+})
