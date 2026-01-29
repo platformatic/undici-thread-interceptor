@@ -6,6 +6,7 @@ Supports:
 
 - load balancing (round robin)
 - mesh networking between the worker threads
+- load shedding (early request rejection)
 
 ## Installation
 
@@ -341,10 +342,121 @@ This architecture allows you to scale Node.js applications across multiple threa
 
 ## API
 
+### Flow Control / Load Shedding
+
+Flow control allows workers to stop accepting requests when overloaded. This prevents request pile-up and enables load balancers to route traffic elsewhere. Requests to paused workers fail immediately with "No target found" error.
+
+There are two complementary approaches:
+
+#### 1. Worker Self-Reporting (`setAccepting`)
+
+Workers can control their own accepting state based on local metrics (event loop lag, memory, etc.):
+
+```javascript
+// In worker thread
+import { wire } from "undici-thread-interceptor";
+import { parentPort } from "node:worker_threads";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+
+const app = createServer((req, res) => {
+  res.end("OK");
+});
+
+const { setAccepting } = wire({ server: app, port: parentPort });
+
+// Monitor event loop lag
+const histogram = monitorEventLoopDelay();
+histogram.enable();
+
+setInterval(async () => {
+  const lagMs = histogram.mean / 1e6;
+  await setAccepting(lagMs < 100); // Stop accepting if lag > 100ms
+}, 1000);
+```
+
+The `setAccepting(boolean)` function:
+- Returns a **Promise** that resolves after the state change has propagated to all workers in the mesh
+- When set to `false`, the worker is skipped by round-robin routing
+- When set to `true`, the worker resumes accepting requests
+
+#### 2. Coordinator-Initiated Control (`pauseWorker` / `resumeWorker`)
+
+The main thread can directly pause/resume workers. This is useful when health monitoring happens in the main thread (e.g., Watt):
+
+```javascript
+// In main thread
+import { createThreadInterceptor } from "undici-thread-interceptor";
+import { Worker } from "node:worker_threads";
+
+const interceptor = createThreadInterceptor({ domain: ".local" });
+
+const worker1 = new Worker("./worker.js");
+const worker2 = new Worker("./worker.js");
+
+await interceptor.route("api", worker1);
+await interceptor.route("api", worker2);
+
+// Pause a specific worker
+await interceptor.pauseWorker(worker1);
+
+// All requests now go to worker2
+// Requests fail with "No target found" if all workers are paused
+
+// Resume the worker
+await interceptor.resumeWorker(worker1);
+```
+
+**Integration with health monitoring:**
+
+```javascript
+// Watt-style health event integration
+healthEmitter.on("worker:unhealthy", async (workerId) => {
+  const worker = workers.get(workerId);
+  await interceptor.pauseWorker(worker);
+});
+
+healthEmitter.on("worker:healthy", async (workerId) => {
+  const worker = workers.get(workerId);
+  await interceptor.resumeWorker(worker);
+});
+```
+
+#### Client-Side Hook (`canAccept`) - Alternative Approach
+
+For per-request decisions on the client side, you can use the `canAccept` hook:
+
+```javascript
+import { createThreadInterceptor, LoadSheddingError } from "undici-thread-interceptor";
+
+const interceptor = createThreadInterceptor({
+  domain: ".local",
+  canAccept: (ctx) => {
+    // Return true to accept, false to reject
+    // ctx contains: hostname, method, path, headers, port, meta
+    return !isOverloaded(ctx.port);
+  },
+});
+```
+
+**Note:** The `canAccept` hook is called on every request which has performance overhead. The server-side `setAccepting` approach is more efficient as state is propagated once and checked via a simple flag.
+
+When all workers reject a request (via any mechanism), clients receive an error:
+
+```javascript
+try {
+  await request("http://api.local", { dispatcher: agent });
+} catch (err) {
+  if (err.message.includes("No target found")) {
+    console.log("Service overloaded, try again later");
+  }
+}
+```
+
 ### Hooks
 
 It's possible to set some simple **synchronous** functions as hooks:
 
+- `canAccept(ctx)` - See [Flow Control / Load Shedding](#flow-control--load-shedding)
 - `onChannelCreation(from, to)`
 - `onServerRequest(req, cb)`
 - `onServerResponse(req, res)`
