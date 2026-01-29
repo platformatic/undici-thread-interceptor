@@ -342,9 +342,88 @@ This architecture allows you to scale Node.js applications across multiple threa
 
 ## API
 
-### Load Shedding
+### Flow Control / Load Shedding
 
-Load shedding allows you to reject requests early, before they enter any worker queue. This is useful for preventing request pile-up during overload, allowing load balancers to route traffic elsewhere.
+Flow control allows workers to stop accepting requests when overloaded. This prevents request pile-up and enables load balancers to route traffic elsewhere. Requests to paused workers fail immediately with "No target found" error.
+
+There are two complementary approaches:
+
+#### 1. Worker Self-Reporting (`setAccepting`)
+
+Workers can control their own accepting state based on local metrics (event loop lag, memory, etc.):
+
+```javascript
+// In worker thread
+import { wire } from "undici-thread-interceptor";
+import { parentPort } from "node:worker_threads";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+
+const app = createServer((req, res) => {
+  res.end("OK");
+});
+
+const { setAccepting } = wire({ server: app, port: parentPort });
+
+// Monitor event loop lag
+const histogram = monitorEventLoopDelay();
+histogram.enable();
+
+setInterval(async () => {
+  const lagMs = histogram.mean / 1e6;
+  await setAccepting(lagMs < 100); // Stop accepting if lag > 100ms
+}, 1000);
+```
+
+The `setAccepting(boolean)` function:
+- Returns a **Promise** that resolves after the state change has propagated to all workers in the mesh
+- When set to `false`, the worker is skipped by round-robin routing
+- When set to `true`, the worker resumes accepting requests
+
+#### 2. Coordinator-Initiated Control (`pauseWorker` / `resumeWorker`)
+
+The main thread can directly pause/resume workers. This is useful when health monitoring happens in the main thread (e.g., Watt):
+
+```javascript
+// In main thread
+import { createThreadInterceptor } from "undici-thread-interceptor";
+import { Worker } from "node:worker_threads";
+
+const interceptor = createThreadInterceptor({ domain: ".local" });
+
+const worker1 = new Worker("./worker.js");
+const worker2 = new Worker("./worker.js");
+
+await interceptor.route("api", worker1);
+await interceptor.route("api", worker2);
+
+// Pause a specific worker
+await interceptor.pauseWorker(worker1);
+
+// All requests now go to worker2
+// Requests fail with "No target found" if all workers are paused
+
+// Resume the worker
+await interceptor.resumeWorker(worker1);
+```
+
+**Integration with health monitoring:**
+
+```javascript
+// Watt-style health event integration
+healthEmitter.on("worker:unhealthy", async (workerId) => {
+  const worker = workers.get(workerId);
+  await interceptor.pauseWorker(worker);
+});
+
+healthEmitter.on("worker:healthy", async (workerId) => {
+  const worker = workers.get(workerId);
+  await interceptor.resumeWorker(worker);
+});
+```
+
+#### Client-Side Hook (`canAccept`) - Alternative Approach
+
+For per-request decisions on the client side, you can use the `canAccept` hook:
 
 ```javascript
 import { createThreadInterceptor, LoadSheddingError } from "undici-thread-interceptor";
@@ -353,124 +432,31 @@ const interceptor = createThreadInterceptor({
   domain: ".local",
   canAccept: (ctx) => {
     // Return true to accept, false to reject
+    // ctx contains: hostname, method, path, headers, port, meta
     return !isOverloaded(ctx.port);
   },
 });
 ```
 
-#### The `canAccept` Hook
+**Note:** The `canAccept` hook is called on every request which has performance overhead. The server-side `setAccepting` approach is more efficient as state is propagated once and checked via a simple flag.
 
-The `canAccept` hook is called before routing a request to a worker. It receives a context object:
-
-```javascript
-{
-  hostname: string,  // Target hostname (e.g., "api.local")
-  method: string,    // HTTP method (e.g., "GET", "POST")
-  path: string,      // Request path (e.g., "/users")
-  headers: object,   // Request headers
-  port: MessagePort, // The worker's MessagePort being checked
-  meta: any,         // Metadata attached when routing (see below)
-}
-```
-
-#### Worker Metadata
-
-You can attach metadata to workers when routing to help identify them in `canAccept`:
+When all workers reject a request (via any mechanism), clients receive an error:
 
 ```javascript
-interceptor.route("api", worker1, { id: "worker-1", maxLoad: 100 });
-interceptor.route("api", worker2, { id: "worker-2", maxLoad: 50 });
-```
-
-The metadata is available in the `canAccept` context as `ctx.meta`.
-
-**With multiple workers**, the hook is called for each worker until one accepts:
-
-```javascript
-// Three workers for the same route
-interceptor.route("api", worker1);
-interceptor.route("api", worker2);
-interceptor.route("api", worker3);
-
-// Request arrives:
-// 1. canAccept({ port: worker1, ... }) → false (busy)
-// 2. canAccept({ port: worker2, ... }) → false (busy)
-// 3. canAccept({ port: worker3, ... }) → true  → routes to worker3
-
-// If all return false → LoadSheddingError (503)
-```
-
-#### LoadSheddingError
-
-When all workers reject a request, a `LoadSheddingError` is thrown:
-
-```javascript
-import { LoadSheddingError } from "undici-thread-interceptor";
-
 try {
   await request("http://api.local", { dispatcher: agent });
 } catch (err) {
-  if (err instanceof LoadSheddingError) {
-    // err.statusCode === 503
-    // err.code === 'UND_ERR_LOAD_SHEDDING'
+  if (err.message.includes("No target found")) {
     console.log("Service overloaded, try again later");
   }
 }
-```
-
-#### Examples
-
-**Memory-based shedding:**
-
-```javascript
-const interceptor = createThreadInterceptor({
-  domain: ".local",
-  canAccept: () => {
-    const usage = process.memoryUsage();
-    return usage.heapUsed / usage.heapTotal < 0.9; // Reject at 90% heap
-  },
-});
-```
-
-**Per-worker inflight tracking with metadata:**
-
-```javascript
-const workerLoad = new Map();
-
-const interceptor = createThreadInterceptor({
-  domain: ".local",
-  canAccept: (ctx) => {
-    const load = workerLoad.get(ctx.meta.id) ?? 0;
-    return load < ctx.meta.maxLoad;
-  },
-});
-
-interceptor.route("api", worker1, { id: "w1", maxLoad: 10 });
-interceptor.route("api", worker2, { id: "w2", maxLoad: 20 });
-
-// Update load counts externally (e.g., from metrics, hooks, etc.)
-workerLoad.set("w1", 5);
-workerLoad.set("w2", 15);
-```
-
-**Method-based shedding:**
-
-```javascript
-const interceptor = createThreadInterceptor({
-  domain: ".local",
-  canAccept: (ctx) => {
-    // Always accept GET, shed POST/PUT under load
-    if (ctx.method === "GET") return true;
-    return !isOverloaded();
-  },
-});
 ```
 
 ### Hooks
 
 It's possible to set some simple **synchronous** functions as hooks:
 
-- `canAccept(ctx)` - See [Load Shedding](#load-shedding)
+- `canAccept(ctx)` - See [Flow Control / Load Shedding](#flow-control--load-shedding)
 - `onChannelCreation(from, to)`
 - `onServerRequest(req, cb)`
 - `onServerResponse(req, res)`
