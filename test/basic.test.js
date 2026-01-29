@@ -950,3 +950,25 @@ test('should not wire a port that has been closed', async (t) => {
     dispatcher: agent
   }), new Error('No target found for app1.local in thread 0.'))
 })
+
+test('replaceServer throws when called with undefined', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'replace-server-validation.js'))
+  t.after(() => worker.terminate())
+
+  const messagePromise = once(worker, 'message')
+  worker.postMessage('test-replace-server-undefined')
+  const [message] = await messagePromise
+
+  strictEqual(message.error, 'server argument is required')
+})
+
+test('replaceServer throws when called with no arguments', async (t) => {
+  const worker = new Worker(join(__dirname, 'fixtures', 'replace-server-validation.js'))
+  t.after(() => worker.terminate())
+
+  const messagePromise = once(worker, 'message')
+  worker.postMessage('test-replace-server-no-args')
+  const [message] = await messagePromise
+
+  strictEqual(message.error, 'server argument is required')
+})
