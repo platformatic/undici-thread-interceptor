@@ -26,7 +26,7 @@ test('should timeout when worker does not respond to MESSAGE_CLOSE', async (t) =
 
   await rejects(
     interceptor.close(),
-    error => error.message.startsWith('Timeout waiting for message from Worker (threadId:')
+    error => error.message.includes('Worker (threadId:') && error.message.includes('[MESSAGE_CLOSE]')
   )
 })
 
@@ -54,7 +54,7 @@ test('should timeout with multiple workers when close is called', async (t) => {
 
   await rejects(
     interceptor.close(),
-    error => error.message.startsWith('Timeout waiting for message from Worker (threadId:')
+    error => error.message.includes('Worker (threadId:') && error.message.includes('[MESSAGE_CLOSE]')
   )
 })
 
@@ -82,7 +82,7 @@ test('should timeout when worker does not respond to MESSAGE_ROUTE_REMOVED durin
 
   await rejects(
     interceptor.unroute('server2', normalWorker),
-    error => error.message.startsWith('Timeout waiting for message from Worker (threadId:')
+    error => error.message.includes('Worker (threadId:') && error.message.includes('[MESSAGE_ROUTE_REMOVED]')
   )
 })
 
@@ -129,6 +129,21 @@ test('waitMessage timeout error handles missing constructor', async (t) => {
     waitMessage(mockTarget, { timeout: 10 }, () => false),
     error => {
       return error.message === 'Timeout waiting for message from unknown (threadId: N/A)'
+    }
+  )
+})
+
+test('waitMessage timeout error includes description when provided', async (t) => {
+  const { waitMessage } = require('../lib/utils')
+  const { EventEmitter } = require('node:events')
+
+  const mockTarget = new EventEmitter()
+  mockTarget.threadId = 42
+
+  await rejects(
+    waitMessage(mockTarget, { timeout: 10, description: 'MESSAGE_TEST' }, () => false),
+    error => {
+      return error.message === 'Timeout waiting for message from EventEmitter (threadId: 42) [MESSAGE_TEST]'
     }
   )
 })
