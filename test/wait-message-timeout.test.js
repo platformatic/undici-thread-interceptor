@@ -26,7 +26,7 @@ test('should timeout when worker does not respond to MESSAGE_CLOSE', async (t) =
 
   await rejects(
     interceptor.close(),
-    error => error.message === 'Timeout waiting for message'
+    error => error.message.startsWith('Timeout waiting for message from Worker (threadId:')
   )
 })
 
@@ -54,7 +54,7 @@ test('should timeout with multiple workers when close is called', async (t) => {
 
   await rejects(
     interceptor.close(),
-    error => error.message === 'Timeout waiting for message'
+    error => error.message.startsWith('Timeout waiting for message from Worker (threadId:')
   )
 })
 
@@ -82,6 +82,53 @@ test('should timeout when worker does not respond to MESSAGE_ROUTE_REMOVED durin
 
   await rejects(
     interceptor.unroute('server2', normalWorker),
-    error => error.message === 'Timeout waiting for message'
+    error => error.message.startsWith('Timeout waiting for message from Worker (threadId:')
+  )
+})
+
+test('waitMessage timeout error includes target information', async (t) => {
+  const { waitMessage } = require('../lib/utils')
+  const { EventEmitter } = require('node:events')
+
+  // Create a mock target with constructor name and threadId
+  const mockTarget = new EventEmitter()
+  mockTarget.threadId = 42
+
+  await rejects(
+    waitMessage(mockTarget, { timeout: 10 }, () => false),
+    error => {
+      return error.message === 'Timeout waiting for message from EventEmitter (threadId: 42)'
+    }
+  )
+})
+
+test('waitMessage timeout error handles missing threadId', async (t) => {
+  const { waitMessage } = require('../lib/utils')
+  const { EventEmitter } = require('node:events')
+
+  // Create a mock target without threadId
+  const mockTarget = new EventEmitter()
+
+  await rejects(
+    waitMessage(mockTarget, { timeout: 10 }, () => false),
+    error => {
+      return error.message === 'Timeout waiting for message from EventEmitter (threadId: N/A)'
+    }
+  )
+})
+
+test('waitMessage timeout error handles missing constructor', async (t) => {
+  const { waitMessage } = require('../lib/utils')
+  const { EventEmitter } = require('node:events')
+
+  // Create a mock target without constructor
+  const mockTarget = new EventEmitter()
+  Object.defineProperty(mockTarget, 'constructor', { value: undefined })
+
+  await rejects(
+    waitMessage(mockTarget, { timeout: 10 }, () => false),
+    error => {
+      return error.message === 'Timeout waiting for message from unknown (threadId: N/A)'
+    }
   )
 })
