@@ -365,6 +365,10 @@ This hook implements access control by allowing you to prevent channel creation.
 
 Use this hook to implement security policies and control which threads can communicate in your mesh network.
 
+#### `onError` hook
+
+The `onError` hook is trigger when some communication error (typically timeouts) happen between worker threads. It receives the error as its only parameter. The error contains several properties furtherly describing the error.
+
 #### Client hooks
 
 These are set on the agent dispatcher.
