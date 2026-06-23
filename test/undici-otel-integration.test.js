@@ -10,8 +10,9 @@ const { SpanKind, trace, propagation } = require('@opentelemetry/api')
 const { W3CTraceContextPropagator } = require('@opentelemetry/core')
 const { Agent, request } = require('undici')
 const { createThreadInterceptor } = require('../')
+const { debug } = require('../lib/utils')
 
-test('undici OTel instrumentation automatically instruments thread-interceptor requests', async (t) => {
+test('undici OTel instrumentation automatically instruments thread-interceptor requests', async t => {
   // Set up OTel provider and exporter BEFORE creating any interceptors
   const memoryExporter = new InMemorySpanExporter()
   const provider = new BasicTracerProvider({
@@ -53,34 +54,37 @@ test('undici OTel instrumentation automatically instruments thread-interceptor r
 
   // Get spans from memory exporter
   const spans = memoryExporter.getFinishedSpans()
-  console.log('Total spans created:', spans.length)
-  console.log('Span names:', spans.map(s => s.name))
-  console.log('Span kinds:', spans.map(s => s.kind))
+  debug('Total spans created:', spans.length)
+  debug(
+    'Span names:',
+    spans.map(s => s.name)
+  )
+  debug(
+    'Span kinds:',
+    spans.map(s => s.kind)
+  )
 
   // Should have at least one CLIENT span from the request
   const clientSpans = spans.filter(s => s.kind === SpanKind.CLIENT)
   ok(clientSpans.length > 0, `Should have created at least one CLIENT span, got ${clientSpans.length}`)
 
   const clientSpan = clientSpans[0]
-  console.log('Client span name:', clientSpan.name)
-  console.log('Client span attributes:', clientSpan.attributes)
+  debug('Client span name:', clientSpan.name)
+  debug('Client span attributes:', clientSpan.attributes)
 
   // Verify span attributes (check for both new and old semantic conventions)
   ok(
     clientSpan.attributes['http.request.method'] || clientSpan.attributes['http.method'],
     'Should have HTTP method attribute'
   )
-  ok(
-    clientSpan.attributes['url.full'] || clientSpan.attributes['http.url'],
-    'Should have URL attribute'
-  )
+  ok(clientSpan.attributes['url.full'] || clientSpan.attributes['http.url'], 'Should have URL attribute')
   ok(
     clientSpan.attributes['http.response.status_code'] || clientSpan.attributes['http.status_code'],
     'Should have response status code attribute'
   )
 })
 
-test('undici OTel instrumentation injects trace context headers', async (t) => {
+test('undici OTel instrumentation injects trace context headers', async t => {
   // Set up W3C Trace Context propagator (required for header injection)
   propagation.setGlobalPropagator(new W3CTraceContextPropagator())
 
@@ -113,7 +117,7 @@ test('undici OTel instrumentation injects trace context headers', async (t) => {
 
   // Create a parent span to establish active context
   const tracer = trace.getTracer('test')
-  await tracer.startActiveSpan('parent-span', async (parentSpan) => {
+  await tracer.startActiveSpan('parent-span', async parentSpan => {
     try {
       // Make a request to the echo-headers endpoint which returns all headers
       const { statusCode, body } = await request('http://myserver.local/echo-headers', {
@@ -124,14 +128,14 @@ test('undici OTel instrumentation injects trace context headers', async (t) => {
       strictEqual(statusCode, 200)
 
       // Verify that traceparent header was injected by OTel instrumentation
-      console.log('Received headers at server:', receivedHeaders)
+      debug('Received headers at server:', receivedHeaders)
 
       ok(
         receivedHeaders.traceparent || receivedHeaders.tracestate,
         'Should have trace context headers (traceparent or tracestate) injected by OTel'
       )
 
-      console.log('Injected trace headers:', {
+      debug('Injected trace headers:', {
         traceparent: receivedHeaders.traceparent,
         tracestate: receivedHeaders.tracestate
       })
@@ -141,7 +145,7 @@ test('undici OTel instrumentation injects trace context headers', async (t) => {
   })
 })
 
-test('undici OTel instrumentation records errors', async (t) => {
+test('undici OTel instrumentation records errors', async t => {
   // Set up OTel provider
   const memoryExporter = new InMemorySpanExporter()
   const provider = new BasicTracerProvider({
@@ -190,17 +194,18 @@ test('undici OTel instrumentation records errors', async (t) => {
 
   // Verify span recorded the error
   const errorSpan = clientSpans[0]
-  console.log('Error span status:', errorSpan.status)
-  console.log('Error span events:', errorSpan.events)
+  debug('Error span status:', errorSpan.status)
+  debug('Error span events:', errorSpan.events)
 
   // The span should have error status or error events
-  const hasError = errorSpan.status.code === 2 || // ERROR code
-                   errorSpan.events.some(e => e.name.includes('exception'))
+  const hasError =
+    errorSpan.status.code === 2 || // ERROR code
+    errorSpan.events.some(e => e.name.includes('exception'))
 
   ok(hasError, 'Span should record error information')
 })
 
-test('undici OTel instrumentation handles multi-value headers', async (t) => {
+test('undici OTel instrumentation handles multi-value headers', async t => {
   const diagnosticsChannel = require('node:diagnostics_channel')
 
   let headersPayload = null
@@ -209,7 +214,7 @@ test('undici OTel instrumentation handles multi-value headers', async (t) => {
   // This ensures lazy construction happens in fireOnClientResponse, after hooks have modified headers
   const headersChannel = diagnosticsChannel.channel('undici:request:headers')
 
-  const headersSub = headersChannel.subscribe((msg) => {
+  const headersSub = headersChannel.subscribe(msg => {
     headersPayload = msg
   })
 
@@ -263,7 +268,7 @@ test('undici OTel instrumentation handles multi-value headers', async (t) => {
   // processed the array-valued headers without throwing errors
 })
 
-test('undici OTel instrumentation produces only one span for network address requests', async (t) => {
+test('undici OTel instrumentation produces only one span for network address requests', async t => {
   const { setTimeout: sleep } = require('node:timers/promises')
 
   // Set up OTel provider and exporter BEFORE creating any interceptors
@@ -312,10 +317,19 @@ test('undici OTel instrumentation produces only one span for network address req
 
   // Get spans from memory exporter
   const spans = memoryExporter.getFinishedSpans()
-  console.log('Total spans created:', spans.length)
-  console.log('Span names:', spans.map(s => s.name))
-  console.log('Span kinds:', spans.map(s => s.kind))
-  console.log('Span attributes:', spans.map(s => s.attributes))
+  debug('Total spans created:', spans.length)
+  debug(
+    'Span names:',
+    spans.map(s => s.name)
+  )
+  debug(
+    'Span kinds:',
+    spans.map(s => s.kind)
+  )
+  debug(
+    'Span attributes:',
+    spans.map(s => s.attributes)
+  )
 
   // Filter client spans (the request spans created by undici OTel instrumentation)
   const clientSpans = spans.filter(s => s.kind === SpanKind.CLIENT)
@@ -332,25 +346,22 @@ test('undici OTel instrumentation produces only one span for network address req
   )
 
   const clientSpan = clientSpans[0]
-  console.log('Client span name:', clientSpan.name)
-  console.log('Client span attributes:', clientSpan.attributes)
+  debug('Client span name:', clientSpan.name)
+  debug('Client span attributes:', clientSpan.attributes)
 
   // Verify the span has proper attributes
   ok(
     clientSpan.attributes['http.request.method'] || clientSpan.attributes['http.method'],
     'Should have HTTP method attribute'
   )
-  ok(
-    clientSpan.attributes['url.full'] || clientSpan.attributes['http.url'],
-    'Should have URL attribute'
-  )
+  ok(clientSpan.attributes['url.full'] || clientSpan.attributes['http.url'], 'Should have URL attribute')
   ok(
     clientSpan.attributes['http.response.status_code'] || clientSpan.attributes['http.status_code'],
     'Should have response status code attribute'
   )
 })
 
-test('undici OTel - network address skips diagnostics_channel events from hooks', async (t) => {
+test('undici OTel - network address skips diagnostics_channel events from hooks', async t => {
   const { setTimeout: sleep } = require('node:timers/promises')
   const diagnosticsChannel = require('node:diagnostics_channel')
 
@@ -367,10 +378,10 @@ test('undici OTel - network address skips diagnostics_channel events from hooks'
   const trailersChannel = diagnosticsChannel.channel('undici:request:trailers')
   const errorChannel = diagnosticsChannel.channel('undici:request:error')
 
-  const createSub = createChannel.subscribe((msg) => events.create.push(msg))
-  const headersSub = headersChannel.subscribe((msg) => events.headers.push(msg))
-  const trailersSub = trailersChannel.subscribe((msg) => events.trailers.push(msg))
-  const errorSub = errorChannel.subscribe((msg) => events.error.push(msg))
+  const createSub = createChannel.subscribe(msg => events.create.push(msg))
+  const headersSub = headersChannel.subscribe(msg => events.headers.push(msg))
+  const trailersSub = trailersChannel.subscribe(msg => events.trailers.push(msg))
+  const errorSub = errorChannel.subscribe(msg => events.error.push(msg))
 
   t.after(() => {
     createChannel.unsubscribe(createSub)
@@ -423,7 +434,7 @@ test('undici OTel - network address skips diagnostics_channel events from hooks'
   // The key assertion: diagnostics_channel events should only be emitted ONCE
   // by undici itself (when it makes the network request), NOT twice
   // (hooks should skip emitting when skipDiagnosticsChannel is true)
-  console.log('diagnostics_channel events:', {
+  debug('diagnostics_channel events:', {
     create: events.create.length,
     headers: events.headers.length,
     trailers: events.trailers.length

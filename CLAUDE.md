@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Test & Lint**: `npm test` - Runs ESLint and test suite with coverage (requires coverage threshold)
 - **Lint Only**: `npx eslint` - Run ESLint using neostandard configuration
-- **Coverage Check**: Tests require coverage check to pass via borp
+- **Coverage Check**: Tests require coverage check to pass via `npm run test`
 
 ## Architecture Overview
 
@@ -46,7 +46,6 @@ Workers use `wire()` function from `index.js:12-15` to:
 
 ### Testing Framework
 
-- Uses `borp` test runner with coverage requirements
 - Tests located in `test/` directory with comprehensive fixture support
 - ESLint configured via `neostandard` for code quality
 
