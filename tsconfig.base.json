@@ -1,0 +1,9 @@
+{
+  "extends": "@platformatic/tsconfig",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/*.ts", "src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test"]
+}

@@ -1,416 +1,370 @@
 # undici-thread-interceptor
 
-An Undici agent that routes requests to a worker thread.
+An Undici compose interceptor that routes HTTP requests to servers registered from worker threads or TCP addresses.
 
-Supports:
+## Install
 
-- load balancing (round robin)
-- mesh networking between the worker threads
-
-## Installation
-
-```bash
-npm install undici undici-thread-interceptor
+```sh
+npm install undici-thread-interceptor
 ```
 
-## Usage
+## Requirements
 
-### Main (main.js)
+- Node.js with worker thread messaging support.
+- Undici 8 style dispatcher handlers.
+- ESM applications. The package is distributed from TypeScript source built to `dist/**`.
 
-```javascript
-import { Worker } from "node:worker_threads";
-import { join } from "node:path";
-import { createThreadInterceptor } from "undici-thread-interceptor";
-import { Agent, request } from "undici";
+## Concepts
 
-const worker = new Worker(join(import.meta.dirname, "worker.js"));
+The v2 API has three explicit roles:
 
-const interceptor = createThreadInterceptor({
-  domain: ".local", // The prefix for all local domains
-});
+- `createCoordinator()` creates a mesh coordinator for one `meshId`.
+- `createServer()` registers one server target for one domain.
+- `createInterceptor()` creates an Undici compose interceptor that routes matching requests through the mesh.
 
-await interceptor.route("myserver", worker); // This method is also aliased as addRoute
+A request is intercepted only when its hostname matches the configured domain suffix and the requested domain exists in the mesh. If no mesh entry exists, the request is delegated to the next Undici dispatcher. If the mesh entry exists but no target is available, the request fails with `NoAvailableTargetError`.
 
-const agent = new Agent().compose(interceptor);
+## Basic Usage
 
-const { statusCode, body } = await request("http://myserver.local", {
-  dispatcher: agent,
-});
+Main thread:
 
-console.log(statusCode, await body.json());
+```js
+import { Worker } from 'node:worker_threads'
+import { Agent, request } from 'undici'
+import { createCoordinator, createInterceptor } from 'undici-thread-interceptor'
 
-// worker.terminate()
-```
+const meshId = 'app'
+const coordinator = createCoordinator({ meshId })
 
-### Worker (worker.js)
+async function main () {
+  const worker = new Worker(new URL('./worker.js', import.meta.url), {
+    workerData: {
+      meshId,
+      coordinatorThreadId: 0
+    }
+  })
 
-#### Generic node HTTP application
+  const interceptor = createInterceptor({
+    meshId,
+    domain: '.local'
+  })
+  await interceptor.ready
 
-```javascript
-import { wire } from "undici-thread-interceptor";
-import { parentPort } from "node:worker_threads";
+  const agent = new Agent().compose(interceptor)
+  const { body } = await request('http://api.local', { dispatcher: agent })
 
-function app(req, res) {
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ hello: "world" }));
+  console.log(await body.json())
+
+  await worker.terminate()
+  interceptor.close()
+  coordinator.destroy()
 }
 
-// App can optionally be a string in the form `http://HOST:PORT`. In that case the interceptor
-// will use the network to perform the request.
-wire({ server: app, port: parentPort });
+main().catch(error => {
+  console.error(error)
+  process.exitCode = 1
+})
 ```
 
-#### Fastify
+Worker thread:
 
-```javascript
-import { wire } from "undici-thread-interceptor";
-import { parentPort } from "node:worker_threads";
-import fastify from "fastify";
+```js
+import { parentPort, workerData } from 'node:worker_threads'
+import Fastify from 'fastify'
+import { createServer } from 'undici-thread-interceptor'
 
-const app = fastify();
+const app = Fastify()
+app.get('/', async () => ({ hello: 'world' }))
 
-app.get("/", (req, reply) => {
-  reply.send({ hello: "world" });
-});
+const server = createServer({
+  meshId: workerData.meshId,
+  coordinatorThreadId: workerData.coordinatorThreadId,
+  serverId: 'api-1',
+  domain: 'api.local',
+  server: app
+})
 
-wire({ server: app, port: parentPort });
+server.ready
+  .then(() => parentPort?.postMessage({ ready: true }))
+  .catch(error => {
+    throw error
+  })
 ```
 
-#### Express
+## Global Fetch
 
-```javascript
-import { wire } from "undici-thread-interceptor";
-import { parentPort } from "node:worker_threads";
-import express from "express";
+The interceptor is a normal Undici compose interceptor, so it can be installed on a global dispatcher:
 
-const app = express();
+```js
+import { Agent, setGlobalDispatcher } from 'undici'
+import { createInterceptor } from 'undici-thread-interceptor'
 
-app.get("/", (req, res) => {
-  res.send({ hello: "world" });
-});
+async function main () {
+  const interceptor = createInterceptor({ meshId: 'app', domain: '.local' })
+  await interceptor.ready
 
-wire({ server: app, port: parentPort });
+  setGlobalDispatcher(new Agent().compose(interceptor))
+
+  const response = await fetch('http://api.local')
+  console.log(await response.json())
+}
+
+main().catch(error => {
+  console.error(error)
+  process.exitCode = 1
+})
 ```
 
-#### Koa
+## TCP Targets
 
-```javascript
-import { wire } from "undici-thread-interceptor";
-import { parentPort } from "node:worker_threads";
-import Koa from "koa";
+`createServer()` can register an HTTP address instead of an in-process server. The interceptor dispatches directly to the target address:
 
-const app = new Koa();
+```js
+import { createServer } from 'undici-thread-interceptor'
 
-app.use((ctx) => {
-  ctx.body = { hello: workerData?.message || "world" };
-});
+const server = createServer({
+  meshId: 'app',
+  serverId: 'api-tcp',
+  domain: 'api.local',
+  server: 'http://127.0.0.1:3000'
+})
 
-wire({ server: app.callback(), port: parentPort });
+server.ready.catch(error => {
+  throw error
+})
 ```
 
-#### Replace the server at runtime
+## Domains
 
-```javascript
-import { wire } from "undici-thread-interceptor";
-import { parentPort } from "node:worker_threads";
-import fastify from "fastify";
+Server domains must not include a protocol. Use `api.local`, not `http:api.local` or `http://api.local`.
 
-const app1 = fastify();
+```js
+createServer({
+  meshId: 'app',
+  domain: 'api.local',
+  server: app
+})
 
-app1.get("/", (req, reply) => {
-  reply.send({ hello: "this is app 1" });
-});
-
-const app2 = fastify();
-
-app2.get("/", (req, reply) => {
-  reply.send({ hello: "this is app 2" });
-});
-
-const { replaceServer } = wire({ server: app1, port: parentPort });
-
-setTimeout(() => {
-  replaceServer(app2);
-}, 5000);
+createInterceptor({
+  meshId: 'app',
+  domain: '.local'
+})
 ```
 
-#### Remove a thread from the mesh
-```javascript
-import { Worker } from "node:worker_threads";
-import { join } from "node:path";
-import { createThreadInterceptor } from "undici-thread-interceptor";
-import { Agent, request } from "undici";
+The interceptor checks the configured domain suffix case-insensitively. Requests outside the configured domain are delegated to Undici.
 
-const worker = new Worker(join(import.meta.dirname, "worker.js"));
+## Hooks
 
-const interceptor = createThreadInterceptor({
-  domain: ".local", // The prefix for all local domains
-});
+Hooks can be a function or an array of functions. Hooks must be synchronous. Async hooks are rejected.
 
-await interceptor.route("myserver", worker); // This method is also aliased as addRoute
+### Interceptor Hooks
 
-// ...
-
-await interceptor.unroute("myserver", worker); // This method is also aliased as removeRoute
-
-// ...
-```
-
-#### Gracefully close the thread
-
-If you want to gracefully close the worker thread, remember to call the `close` function of the interceptor.
-
-```javascript
-import { wire } from "undici-thread-interceptor";
-
-// ...
-
-const { interceptor } = wire({ server: app, port: parentPort });
-
-// ...
-
-await interceptor.close();
-```
-
-#### Gracefully close all the threads 
-
-If you call the `close` method from the main thread, it will call the `close` function on each routed thread.
-
-After calling the `close` method, each call to `route` will throw an error, unless you call the `restart` method first.
-
-## How Routing Works
-
-The undici-thread-interceptor implements a sophisticated routing system that distributes HTTP requests across multiple worker threads using domain-based routing and round-robin load balancing. Understanding how this system works will help you design more efficient multi-threaded applications.
-
-### Core Architecture
-
-The routing system consists of five main components working together:
-
-1. **ThreadInterceptor** - The main entry point that creates and coordinates the entire system
-2. **Interceptor** - Handles incoming requests and performs domain matching and routing decisions
-3. **Coordinator** - Manages routes and orchestrates communication between threads via MessageChannels
-4. **RoundRobin** - Implements load balancing to distribute requests evenly across available worker threads
-5. **Wire** - Configures worker threads to receive and process incoming requests
-
-### Request Flow
-
-When a request is made to a hostname like `myserver.local`, here's the complete journey:
-
-```mermaid
-graph TD
-    A[Client Request: http://myserver.local] --> B[ThreadInterceptor]
-    B --> C{Domain Match Check}
-    C -->|Ends with .local| D[Find Route for 'myserver.local']
-    C -->|No match| E[Pass to next dispatcher]
-    D --> F[RoundRobin Selector]
-    F --> G[Select next worker thread]
-    G --> H[Create MessageChannel]
-    H --> I[Send request via postMessage]
-    I --> J[Worker Thread receives request]
-    J --> K[Process with application server]
-    K --> L[Send response back]
-    L --> M[Client receives response]
-    
-    style A fill:#e1f5fe
-    style M fill:#e8f5e8
-    style C fill:#fff3e0
-```
-
-### Domain-Based Routing
-
-The interceptor uses a configurable domain suffix to determine which requests to handle:
-
-1. **Domain Configuration**: When creating the interceptor, you specify a domain like `.local`
-2. **Hostname Matching**: For each request, the system extracts the hostname and checks if it ends with the configured domain
-3. **Case-Insensitive**: Hostname matching is case-insensitive for reliability
-4. **Fallback**: Requests that don't match the domain are passed to the next dispatcher in the chain
-
-### Round-Robin Load Balancing
-
-Each hostname can have multiple worker threads, and the system uses round-robin load balancing to distribute requests:
-
-```javascript
-// Multiple workers for the same hostname
-await interceptor.route("api", worker1);
-await interceptor.route("api", worker2);
-await interceptor.route("api", worker3);
-
-// Requests to api.local will be distributed:
-// Request 1 -> worker1
-// Request 2 -> worker2
-// Request 3 -> worker3
-// Request 4 -> worker1 (cycles back)
-```
-
-The RoundRobin class maintains an index that automatically advances with each request, ensuring even distribution across all available workers.
-
-**Worker Readiness:** The round-robin selector only considers workers that are fully initialized and ready to handle requests. Workers signal their readiness after calling `wire()` and setting up their server. This prevents requests from being routed to workers that haven't finished initialization.
-
-### Mesh Networking Between Workers
-
-One of the most powerful features is the automatic mesh networking between worker threads. When you add routes, the coordinator automatically establishes communication channels between all workers:
-
-```mermaid
-graph LR
-    subgraph "Main Thread"
-        MT[ThreadInterceptor/Coordinator]
-    end
-    
-    subgraph "Worker Threads"
-        W1[Worker 1<br/>api.local]
-        W2[Worker 2<br/>api.local] 
-        W3[Worker 3<br/>auth.local]
-        W4[Worker 4<br/>auth.local]
-    end
-    
-    MT -->|MessageChannel| W1
-    MT -->|MessageChannel| W2
-    MT -->|MessageChannel| W3
-    MT -->|MessageChannel| W4
-    
-    W1 <-->|Direct Channel| W2
-    W1 <-->|Direct Channel| W3
-    W1 <-->|Direct Channel| W4
-    W2 <-->|Direct Channel| W3
-    W2 <-->|Direct Channel| W4
-    W3 <-->|Direct Channel| W4
-    
-    style MT fill:#e3f2fd
-    style W1 fill:#f3e5f5
-    style W2 fill:#f3e5f5
-    style W3 fill:#e8f5e8
-    style W4 fill:#e8f5e8
-```
-
-### Inter-Thread Communication
-
-The system uses Node.js MessageChannel for efficient communication:
-
-1. **Request Serialization**: HTTP request details (method, path, headers, body) are serialized and sent via `postMessage`
-2. **Stream Handling**: Large request/response bodies are transferred as MessagePort streams to avoid memory copying
-3. **Response Routing**: Each request gets a unique ID to match responses back to the correct handler
-4. **Error Handling**: Network errors and timeouts are properly propagated back to the client
-
-### Dynamic Route Management
-
-Routes can be added and removed dynamically during runtime:
-
-```javascript
-// Add a route
-await interceptor.route("newservice", workerThread);
-
-// Remove a specific worker from a route
-await interceptor.unroute("newservice", workerThread);
-
-// The mesh network automatically updates
-// All other workers are notified of changes
-```
-
-When routes are modified:
-1. The coordinator notifies all existing workers about the change
-2. MessageChannels are established or torn down as needed
-3. The mesh network maintains consistency across all threads
-
-The `interceptor.route` method returns a promise that resolves when the worker is ready to handle requests.
-The worker is considered ready when it has called `wire` or `replaceServer` with a non-null server value.
-
-The `interceptor.unroute` method returns a promise that resolves when the worker is processed
-all inflight requests and worker route is removed from all connected interceptors.
-
-### Network Address Support
-
-Workers can also proxy to network addresses instead of handling requests directly:
-
-```javascript
-// Route to a network service
-wire({ server: "http://localhost:3001", port: parentPort });
-```
-
-When a worker is configured with a network address, requests are forwarded to that URL instead of being processed locally.
-
-### Performance Characteristics
-
-The routing system is designed for high performance:
-
-- **Zero-Copy Streaming**: Large payloads use MessagePort transfers to avoid memory copying
-- **Concurrent Processing**: Multiple workers can process requests simultaneously  
-- **Efficient Load Balancing**: Round-robin is O(1) for worker selection
-- **Asynchronous Communication**: All inter-thread communication is non-blocking
-
-This architecture allows you to scale Node.js applications across multiple threads while maintaining the simplicity of HTTP-based communication patterns.
-
-## API
-
-### Hooks
-
-It's possible to set some simple **synchronous** functions as hooks:
-
-- `onChannelCreation(from, to)`
-- `onServerRequest(req, cb)`
-- `onServerResponse(req, res)`
-- `onServerError(req, res, error)`
-- `onClientRequest(req, clientCtx)`
-- `onClientResponse(req, res, clientCtx)`
-- `onClientResponseEnd(req, res, clientCtx)`
-- `onClientError(req, res, clientCtx, error)`
-
-The `clientCtx` is used to pass through hooks calls objects which cannot be set on request
-(which is then sent through `postMessage`, so it might be not serializable).
-
-#### `onChannelCreation` hook
-
-The `onChannelCreation` hook is triggered when establishing communication channels between worker threads. It receives parameters `first` and `second` identifying the threads involved in the connection (in lower-case).
-
-This hook implements access control by allowing you to prevent channel creation. If the hook returns `false`, channel establishment is blocked, remaining hooks are skipped, and the threads cannot communicate with each other. All other return values (including `undefined`) allow the channel to be created.
-
-Use this hook to implement security policies and control which threads can communicate in your mesh network.
-
-#### `onError` hook
-
-The `onError` hook is trigger when some communication error (typically timeouts) happen between worker threads. It receives the error as its only parameter. The error contains several properties furtherly describing the error.
-
-#### Client hooks
-
-These are set on the agent dispatcher.
-
-```javascript
-const interceptor = createThreadInterceptor({
-  domain: ".local",
-  onClientRequest: (req) => console.log("onClientRequest called", req),
-});
-await interceptor.route("myserver", worker);
-
-const agent = new Agent().compose(interceptor);
-
-const { statusCode } = await request("http://myserver.local", {
-  dispatcher: agent,
-});
-```
-
-#### Server hooks
-
-These can be passed to the `wire` function in workers. e.g. with Fastify:
-
-```javascript
-import { wire } from "undici-thread-interceptor";
-import { parentPort } from "node:worker_threads";
-import fastify from "fastify";
-
-const app = fastify();
-
-app.get("/", (req, reply) => {
-  reply.send({ hello: "world" });
-});
-
-wire({
-  server: app,
-  port: parentPort,
-  onServerRequest: (req, cb) => {
-    console.log("onServerRequest called", req);
-    cb();
+```js
+const interceptor = createInterceptor({
+  meshId: 'app',
+  domain: '.local',
+  onRequest (req, ctx) {
+    ctx.started = Date.now()
   },
-});
+  allowTarget (req, target, ctx) {
+    return target.metadata?.disabled !== true
+  },
+  onResponse (req, res, ctx) {
+    console.log(req.path, res.statusCode, Date.now() - ctx.started)
+  },
+  onResponseEnd (req, res, ctx) {
+    console.log('completed', req.path)
+  },
+  onError (req, res, ctx, error) {
+    console.error(error)
+  }
+})
 ```
+
+`allowTarget` is an access-control hook. Returning `false` denies that target and selection continues with the next available target. In hook arrays, evaluation stops on the first `false`.
+
+### Server Hooks
+
+```js
+const server = createServer({
+  meshId: 'app',
+  serverId: 'api-1',
+  domain: 'api.local',
+  server: app,
+  onRequest (req) {
+    console.log(req.method, req.url)
+  },
+  onResponse (req, res) {
+    console.log(res.statusCode)
+  },
+  onError (req, res, error) {
+    console.error(error)
+  }
+})
+```
+
+Server hooks are notification hooks. `onRequest` does not receive a `next` callback and cannot replace the application handler.
+
+## Metadata
+
+Servers and interceptors can publish arbitrary metadata into the mesh:
+
+```js
+const server = createServer({
+  meshId: 'app',
+  domain: 'api.local',
+  server: app,
+  metadata: { region: 'eu-west-1' }
+})
+
+server.updateMetadata({ region: 'eu-west-1', disabled: true })
+```
+
+Interceptor target hooks can use server metadata for routing decisions.
+
+## Lifecycle
+
+Servers can be paused, resumed, replaced, and closed:
+
+```js
+server.pause()
+server.resume()
+server.replaceServer(nextApp)
+server.updateMetadata(nextMetadata)
+server.close().catch(error => {
+  throw error
+})
+```
+
+Paused servers remain visible in mesh snapshots but are skipped by selection. Closing a server removes it from the mesh immediately, then drains queued and in-flight thread-mode requests.
+
+Interceptors expose lifecycle and mesh inspection helpers:
+
+```js
+interceptor.ready
+  .then(() => {
+    console.log(interceptor.interceptorId)
+    console.log(interceptor.getMesh())
+    interceptor.updateMetadata({ role: 'client' })
+    interceptor.close()
+  })
+  .catch(error => {
+    throw error
+  })
+```
+
+Coordinators can manage server state and their own lifecycle:
+
+```js
+coordinator.pause('api-1')
+coordinator.resume('api-1')
+coordinator.close('api-1')
+coordinator.close()
+coordinator.restart()
+coordinator.destroy()
+```
+
+`close(serverId)` asks one registered server to close. `close()` without a server id closes current members and keeps the coordinator reusable after `restart()`. `destroy()` permanently removes the coordinator from the process registry.
+
+## API Reference
+
+### `createCoordinator(options)`
+
+```ts
+interface CoordinatorOptions {
+  meshId: string
+  onMesh?: (mesh: Mesh) => void
+  onInterceptorAvailable?: (interceptor: MeshInterceptor) => void
+  onInterceptorClosed?: (interceptor: MeshInterceptor) => void
+  onServerAvailable?: (server: MeshServer) => void
+  onServerUnavailable?: (server: MeshServer) => void
+  onServerPaused?: (server: MeshServer) => void
+  onServerResumed?: (server: MeshServer) => void
+  onServerClosed?: (server: MeshServer) => void
+  onServerUpdate?: (server: MeshServer) => void
+  onError?: (error: Error) => void
+}
+```
+
+### `createServer(options)`
+
+```ts
+interface ServerOptions {
+  meshId: string
+  serverId?: string
+  domain: string
+  server: any
+  paused?: boolean
+  metadata?: unknown
+  coordinatorThreadId?: number
+  bootstrapTimeout?: number
+  onRequest?: Hook | Hook[]
+  onResponse?: Hook | Hook[]
+  onError?: Hook | Hook[]
+}
+```
+
+`serverId` defaults to a `crypto.randomUUID()` value. `coordinatorThreadId` defaults to `0`. `server` can be a Fastify instance, an Express/Koa-style handler accepted by `light-my-request`, or a TCP target address string.
+
+### `createInterceptor(options)`
+
+```ts
+interface InterceptorOptions {
+  meshId: string
+  interceptorId?: string
+  domain?: string
+  connectTimeout?: number
+  coordinatorThreadId?: number
+  bootstrapTimeout?: number
+  metadata?: unknown
+  onRequest?: Hook | Hook[]
+  allowTarget?: Hook | Hook[]
+  onResponse?: Hook | Hook[]
+  onResponseEnd?: Hook | Hook[]
+  onError?: Hook | Hook[]
+}
+```
+
+The returned value is both an Undici compose interceptor and an object with:
+
+- `interceptorId`
+- `ready`
+- `close()`
+- `updateMetadata(metadata)`
+- `getMesh()`
+
+`interceptorId` defaults to a `crypto.randomUUID()` value. `coordinatorThreadId` defaults to `0`.
+
+## Diagnostics
+
+Thread-mode requests publish Undici-compatible diagnostics channels:
+
+- `undici:request:create`
+- `undici:request:headers`
+- `undici:request:trailers`
+- `undici:request:error`
+
+Server-side diagnostics:
+
+- `http.server.request.start`
+- `http.server.response.finish`
+
+Mesh diagnostics:
+
+- `undici-thread-interceptor:mesh:update`
+- `undici-thread-interceptor:peer:connect`
+- `undici-thread-interceptor:peer:disconnect`
+
+TCP targets are dispatched through Undici directly and do not emit synthetic thread-mode Undici request diagnostics.
+
+## Errors
+
+- `NoAvailableTargetError` is thrown when a domain exists in the mesh but no available target can serve it.
+- `ConnectTimeoutError` is thrown when the interceptor times out waiting for a thread-mode response.
+
+## Migration
+
+See [MIGRATION.md](./MIGRATION.md) for v1-to-v2 changes.
 
 ## License
 

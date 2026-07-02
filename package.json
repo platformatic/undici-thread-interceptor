@@ -2,12 +2,12 @@
   "name": "undici-thread-interceptor",
   "version": "1.4.0",
   "description": "An Undici interceptor that routes requests over a worker thread",
-  "main": "index.js",
-  "scripts": {
-    "test": "c8 -c test/config/c8-local.json node --test --test-reporter=cleaner-spec-reporter 'test/*.test.js'",
-    "test:ci": "c8 -c test/config/c8-ci.json node --test --test-reporter=cleaner-spec-reporter 'test/*.test.js'",
-    "lint": "eslint --cache",
-    "ci": "npm run lint && npm run test:ci"
+  "author": "Matteo Collina <hello@matteocollina.com>",
+  "homepage": "https://github.com/platformatic/undici-thread-interceptor",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/platformatic/undici-thread-interceptor.git"
   },
   "keywords": [
     "undici",
@@ -15,37 +15,52 @@
     "thread",
     "worker"
   ],
-  "author": "Matteo Collina <hello@matteocollina.com>",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/platformatic/undici-thread-interceptor.git"
-  },
   "bugs": {
     "url": "https://github.com/platformatic/undici-thread-interceptor/issues"
   },
-  "homepage": "https://github.com/platformatic/undici-thread-interceptor#readme",
+  "private": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "type": "module",
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.base.json",
+    "lint": "eslint --cache",
+    "typecheck": "tsc -p . --noEmit",
+    "format": "prettier -w src test",
+    "test": "c8 -c test/config/c8-local.json node --test --test-reporter=cleaner-spec-reporter 'test/*.test.ts' 'test/*/*.test.ts'",
+    "test:ci": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90 --test-reporter=cleaner-spec-reporter 'test/*.test.ts' 'test/*/*.test.ts'",
+    "ci": "npm run build && npm run lint && npm run test:ci"
+  },
   "dependencies": {
-    "fastq": "^1.19.1",
-    "hyperid": "^3.2.0",
-    "light-my-request": "^6.5.1",
-    "undici": "^7.0.0"
+    "@watchable/unpromise": "^1.0.2",
+    "light-my-request": "^6.6.0",
+    "undici": "^8.5.0"
   },
   "devDependencies": {
-    "@fastify/static": "^9.0.0",
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/core": "^2.2.0",
-    "@opentelemetry/instrumentation-undici": "^0.21.0",
-    "@opentelemetry/sdk-trace-base": "^2.2.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/core": "^2.8.0",
+    "@opentelemetry/instrumentation-undici": "^0.29.0",
+    "@opentelemetry/sdk-trace-base": "^2.8.0",
+    "@platformatic/tsconfig": "^0.2.0",
+    "@types/node": "^26.0.1",
     "atomic-sleep": "^1.0.0",
-    "autocannon": "^8.0.0",
-    "c8": "^10.1.3",
+    "c8": "^11.0.0",
     "cleaner-spec-reporter": "^1.0.3",
-    "eslint": "^9.5.0",
-    "express": "^5.1.0",
-    "fastify": "^5.0.0",
-    "koa": "^3.0.0",
-    "neostandard": "^0.12.0",
-    "split2": "^4.2.0"
+    "eslint": "^9.35.0",
+    "express": "^5.2.1",
+    "fastify": "^5.9.0",
+    "koa": "^3.2.1",
+    "neostandard": "^0.13.0",
+    "prettier": "^3.9.4",
+    "prettier-plugin-space-before-function-paren": "^0.1.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">= 22.22.0 || >= 24.6.0"
   }
 }
