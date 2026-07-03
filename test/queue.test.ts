@@ -32,6 +32,20 @@ test('yields the worker event loop under high request load', async t => {
   await interceptor.ready
   const agent = new Agent().compose(interceptor)
   await waitForMeshServers(interceptor, 'http:slowapi.local', 1)
+  const getIntervalCount = async (): Promise<number> => {
+    const intervalCountPromise = new Promise<number>(resolve => {
+      const onMessage = (message: { type?: string; count: number }) => {
+        if (message.type === 'interval-count') {
+          intervalPort.off('message', onMessage)
+          resolve(message.count)
+        }
+      }
+      intervalPort.on('message', onMessage)
+      intervalPort.postMessage({ type: 'get-interval-count' })
+    })
+
+    return intervalCountPromise
+  }
 
   const testResponse = await request('http://slowapi.local', {
     dispatcher: agent,
@@ -39,6 +53,7 @@ test('yields the worker event loop under high request load', async t => {
   })
   strictEqual(testResponse.statusCode, 200)
   await testResponse.body.json()
+  const beforeIntervalCount = await getIntervalCount()
 
   const responses = await Promise.all(
     Array.from({ length: 101 }, () => {
@@ -55,17 +70,12 @@ test('yields the worker event loop under high request load', async t => {
     strictEqual(body.hello, 'world')
   }
 
-  const intervalCountPromise = new Promise<number>(resolve => {
-    intervalPort.on('message', message => {
-      if (message.type === 'interval-count') {
-        resolve(message.count)
-      }
-    })
-    intervalPort.postMessage({ type: 'get-interval-count' })
-  })
-  const intervalCount = await intervalCountPromise
+  const intervalCount = await getIntervalCount()
 
-  ok(intervalCount > 2, `Worker event loop executed ${intervalCount} intervals during heavy load`)
+  ok(
+    intervalCount > beforeIntervalCount,
+    `Worker event loop executed ${intervalCount - beforeIntervalCount} intervals during heavy load`
+  )
 })
 
 test('reports queue size while draining and covers utility edge branches', async () => {
