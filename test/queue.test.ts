@@ -118,6 +118,12 @@ test('reports queue size while draining and covers utility edge branches', async
   await sendThreadMessage(threadId, {}).catch(error => {
     strictEqual(error.message, 'worker message failed')
   })
+
+  const failingQueue = createRequestQueue('callback-error', () => {
+    throw new Error('callback failed')
+  })
+  failingQueue.push(undefined)
+  await failingQueue.drained()
 })
 
 test('emits a warning when queue processing fails outside the callback', async t => {

@@ -20,7 +20,7 @@ const worker = new Worker(new URL('./worker.ts', import.meta.url), {
 try {
   await once(worker, 'message')
 
-  const interceptor = createInterceptor({ meshId, domain: '.local', connectTimeout: 60000 })
+  const interceptor = createInterceptor({ meshId, domain: '.local', connectTimeout: 0 })
   await interceptor.ready
   await waitForOrigin(interceptor, 'http:myserver.local')
   const agent = new Agent().compose(interceptor)

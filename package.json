@@ -40,6 +40,8 @@
   },
   "dependencies": {
     "@watchable/unpromise": "^1.0.2",
+    "fastq": "^1.20.1",
+    "hyperid": "^4.0.0",
     "light-my-request": "^6.6.0",
     "undici": "^8.5.0"
   },

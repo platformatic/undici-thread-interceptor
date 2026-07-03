@@ -94,6 +94,35 @@ test('allowTarget skips denied servers and selects another available target', as
   deepStrictEqual(await body.json(), { hello: 'allowed' })
 })
 
+test('allowTarget can deny all available targets', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'allow-target-deny-all')
+  await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'deny-all.local'
+  })
+  await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-2',
+    domain: 'deny-all.local'
+  })
+  const interceptor = createInterceptor({
+    meshId,
+    coordinatorThreadId,
+    domain: '.local',
+    allowTarget () {
+      return false
+    }
+  })
+  t.after(() => interceptor.close())
+  await interceptor.ready
+  await waitForMeshServers(interceptor, 'http:deny-all.local', 2)
+
+  await rejects(request('http://deny-all.local', { dispatcher: new Agent().compose(interceptor) }), NoAvailableTargetError)
+})
+
 test('paused server is not selected', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'paused')
   await createWorkerServer(t, {

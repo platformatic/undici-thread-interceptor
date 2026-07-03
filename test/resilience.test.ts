@@ -7,6 +7,7 @@ import { MessageChannel, threadId, type MessagePort } from 'node:worker_threads'
 import { Agent, interceptors, request } from 'undici'
 
 import { ConnectTimeoutError, Interceptor, createCoordinator, createInterceptor, createServer } from '../src/index.ts'
+import { MessagePortWritable } from '../src/message-port-streams.ts'
 import { Message, type CoordinatorConnectMessage, type RequestMessage } from '../src/protocol.ts'
 import { createAgent, createMesh, createWorkerServer, requestWithTimeout, waitForMeshServers } from './helper.ts'
 
@@ -104,6 +105,30 @@ test('applies connectTimeout while waiting for a response', async t => {
     request('http://response-timeout.local/unfinished-business', { dispatcher: agent }),
     ConnectTimeoutError
   )
+})
+
+test('disables response timeout when connectTimeout is zero', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'response-timeout-disabled')
+  await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'response-timeout-disabled.local'
+  })
+  const interceptor = createInterceptor({
+    meshId,
+    coordinatorThreadId,
+    domain: '.local',
+    connectTimeout: 0
+  })
+  t.after(() => interceptor.close())
+  await interceptor.ready
+  await waitForMeshServers(interceptor, 'http:response-timeout-disabled.local', 1)
+  const agent = new Agent().compose(interceptor)
+  const pending = request('http://response-timeout-disabled.local/unfinished-business', { dispatcher: agent })
+  pending.catch(() => {})
+
+  await rejects(requestWithTimeout(pending, 200), { message: 'timeout' })
 })
 
 test('server direct peer paths handle invalid messages and inject errors', async t => {
@@ -410,4 +435,131 @@ test('interceptor ignores peer messages without matching pending requests', asyn
   peer.postMessage({ type: Message.RESPONSE, id: 'missing', statusCode: 204, headers: {}, body: Buffer.alloc(0) })
   peer.postMessage({ type: Message.RESPONSE, id: peerRequest.id, statusCode: 204, headers: {}, body: Buffer.alloc(0) })
   await done.promise
+
+  {
+    const arrayDone = Promise.withResolvers<void>()
+    const chunks: Buffer[] = []
+    interceptor.dispatch(() => false, { origin: 'http://fake.local', path: '/', method: 'GET', headers: {} } as any, {
+      onResponseData (_controller: any, chunk: Buffer) {
+        chunks.push(chunk)
+      },
+      onResponseEnd () {
+        deepStrictEqual(Buffer.concat(chunks), Buffer.from('ok'))
+        arrayDone.resolve()
+      }
+    })
+    const [arrayRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+    peer.postMessage({
+      type: Message.RESPONSE,
+      id: arrayRequest.id,
+      statusCode: 200,
+      headers: {},
+      body: new Uint8Array(Buffer.from('ok'))
+    })
+    await arrayDone.promise
+  }
+
+  {
+    const stringDone = Promise.withResolvers<void>()
+    const chunks: Buffer[] = []
+    interceptor.dispatch(() => false, { origin: 'http://fake.local', path: '/', method: 'GET', headers: {} } as any, {
+      onResponseData (_controller: any, chunk: Buffer) {
+        chunks.push(chunk)
+      },
+      onResponseEnd () {
+        deepStrictEqual(Buffer.concat(chunks), Buffer.from('ok'))
+        stringDone.resolve()
+      }
+    })
+    const [stringRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+    peer.postMessage({
+      type: Message.RESPONSE,
+      id: stringRequest.id,
+      statusCode: 200,
+      headers: {},
+      body: 'ok'
+    })
+    await stringDone.promise
+  }
+
+  {
+    const streamedDone = Promise.withResolvers<void>()
+    const chunks: Buffer[] = []
+    interceptor.dispatch(() => false, { origin: 'http://fake.local', path: '/', method: 'GET', headers: {} } as any, {
+      onResponseData (controller: any, chunk: Buffer) {
+        controller.pause()
+        controller.resume()
+        chunks.push(chunk)
+      },
+      onResponseEnd () {
+        deepStrictEqual(Buffer.concat(chunks), Buffer.from('ok'))
+        streamedDone.resolve()
+      }
+    })
+    const [streamedRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+    const transferable = MessagePortWritable.asTransferable(Readable.from(['ok']))
+    peer.postMessage(
+      { type: Message.RESPONSE, id: streamedRequest.id, statusCode: 200, headers: {}, bodyPort: transferable.port },
+      transferable.transferList
+    )
+    await streamedDone.promise
+  }
+
+  {
+    const dataErrorDone = Promise.withResolvers<void>()
+    interceptor.dispatch(() => false, { origin: 'http://fake.local', path: '/', method: 'GET', headers: {} } as any, {
+      onResponseData () {
+        throw new Error('stream data failed')
+      },
+      onResponseError (_controller: any, error: Error) {
+        strictEqual(error.message, 'stream data failed')
+        dataErrorDone.resolve()
+      }
+    })
+    const [streamedRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+    const transferable = MessagePortWritable.asTransferable(Readable.from(['ok']))
+    peer.postMessage(
+      { type: Message.RESPONSE, id: streamedRequest.id, statusCode: 200, headers: {}, bodyPort: transferable.port },
+      transferable.transferList
+    )
+    await dataErrorDone.promise
+  }
+
+  {
+    const endErrorDone = Promise.withResolvers<void>()
+    interceptor.dispatch(() => false, { origin: 'http://fake.local', path: '/', method: 'GET', headers: {} } as any, {
+      onResponseEnd () {
+        throw new Error('stream end failed')
+      },
+      onResponseError (_controller: any, error: Error) {
+        strictEqual(error.message, 'stream end failed')
+        endErrorDone.resolve()
+      }
+    })
+    const [streamedRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+    const transferable = MessagePortWritable.asTransferable(Readable.from(['ok']))
+    peer.postMessage(
+      { type: Message.RESPONSE, id: streamedRequest.id, statusCode: 200, headers: {}, bodyPort: transferable.port },
+      transferable.transferList
+    )
+    await endErrorDone.promise
+  }
+
+  {
+    const remoteErrorDone = Promise.withResolvers<void>()
+    interceptor.dispatch(() => false, { origin: 'http://fake.local', path: '/', method: 'GET', headers: {} } as any, {
+      onResponseError (_controller: any, error: Error) {
+        strictEqual(error.message, 'stream body failed')
+        remoteErrorDone.resolve()
+      }
+    })
+    const [streamedRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+    const channel = new MessageChannel()
+    peer.postMessage(
+      { type: Message.RESPONSE, id: streamedRequest.id, statusCode: 200, headers: {}, bodyPort: channel.port1 },
+      [channel.port1]
+    )
+    channel.port2.postMessage({ err: new Error('stream body failed') })
+    await remoteErrorDone.promise
+  }
 })

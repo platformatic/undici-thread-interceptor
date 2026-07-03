@@ -1,5 +1,5 @@
+import hyperid from 'hyperid'
 import { AsyncResource } from 'node:async_hooks'
-import { EventEmitter } from 'node:events'
 import type { Readable } from 'node:stream'
 import type { MessagePort } from 'node:worker_threads'
 import { MessageChannel, threadId } from 'node:worker_threads'
@@ -75,9 +75,12 @@ interface PendingRequest {
   request: DispatchOptions
   handler: DispatchHandler
   context: Record<PropertyKey, unknown>
-  controller: DispatchController
+  controller: any
   resolve: () => void
   reject: (error: Error) => void
+  onMessage: (value: unknown) => void
+  pauseResponse?: () => void
+  resumeResponse?: () => void
 }
 
 interface Peer {
@@ -139,34 +142,6 @@ function isStreamBody (body: unknown): body is Readable {
   )
 }
 
-class DispatchController extends EventEmitter {
-  aborted: boolean
-  paused: boolean
-  reason: Error | null
-
-  constructor () {
-    super()
-    this.aborted = false
-    this.paused = false
-    this.reason = null
-  }
-
-  abort (reason: Error): void {
-    this.aborted = true
-    this.reason = reason
-  }
-
-  pause (): void {
-    this.paused = true
-    this.emit('pause')
-  }
-
-  resume (): void {
-    this.paused = false
-    this.emit('resume')
-  }
-}
-
 export function createInterceptor (options: InterceptorOptions): InterceptorFunction {
   return new Interceptor(options).asFunction()
 }
@@ -183,6 +158,7 @@ export class Interceptor {
   #mesh: Mesh | null
   #cursors: Map<string, number>
   #peers: Map<string, Peer>
+  #requestId: () => string
   #closed: boolean
 
   constructor (options: InterceptorOptions) {
@@ -200,6 +176,7 @@ export class Interceptor {
     this.#mesh = null
     this.#cursors = new Map()
     this.#peers = new Map()
+    this.#requestId = hyperid()
     this.#closed = false
 
     const channel = new MessageChannel()
@@ -246,6 +223,7 @@ export class Interceptor {
     if (this.#closed) {
       return
     }
+
     this.#closed = true
     this.#port.postMessage({
       type: Message.INTERCEPTOR_LEAVE,
@@ -342,27 +320,16 @@ export class Interceptor {
     request: DispatchOptions,
     context: Record<PropertyKey, unknown>
   ): MeshServer | null {
-    const available = serverIds
-      .map(serverId => this.#mesh?.servers[serverId])
-      .filter((server): server is MeshServer => server?.state === 'available')
+    const cursor = this.#cursors.get(origin) ?? Math.floor(Math.random() * serverIds.length)
 
-    if (available.length === 0) {
-      return null
-    }
+    for (let i = 0; i < serverIds.length; i++) {
+      const index = (cursor + i) % serverIds.length
+      const server = this.#mesh?.servers[serverIds[index]]
 
-    let cursor = this.#cursors.get(origin)
-    if (cursor === undefined) {
-      cursor = Math.floor(Math.random() * available.length)
-    }
-
-    for (let i = 0; i < available.length; i++) {
-      const server = available[(cursor + i) % available.length]
-      if (!this.#isTargetAllowed(request, server, context)) {
-        continue
+      if (server?.state === 'available' && this.#isTargetAllowed(request, server, context)) {
+        this.#cursors.set(origin, (index + 1) % serverIds.length)
+        return server
       }
-
-      this.#cursors.set(origin, (cursor + i + 1) % available.length)
-      return server
     }
 
     return null
@@ -375,19 +342,45 @@ export class Interceptor {
     context: Record<PropertyKey, unknown>,
     handler: DispatchHandler
   ): Promise<void> {
-    const peer = await executeWithTimeout(
-      this.#getPeerMessagePort(server.serverId, server.origin, server.threadId),
-      this.#connectTimeout,
-      kTimeout
-    )
-    /* c8 ignore next 3 - hard to test */
-    if (peer === kTimeout) {
-      throw new ConnectTimeoutError(`Timeout while connecting to ${server.serverId}.`)
-    }
-    const id = createId()
-    const controller = new DispatchController()
+    const peer = await this.#ensurePeerMessagePort(server)
+    const id = this.#requestId()
     const { promise: responsePromise, resolve, reject } = Promise.withResolvers<void>()
-    peer.pending.set(id, { request, handler, context, controller, resolve, reject })
+
+    const pending: PendingRequest = {
+      request,
+      handler,
+      context,
+      controller: {
+        aborted: false,
+        paused: false,
+        reason: null as Error | null,
+        abort (reason: Error) {
+          this.aborted = true
+          this.reason = reason
+        },
+        pause () {
+          this.paused = true
+          pending.pauseResponse?.()
+        },
+        resume () {
+          this.paused = false
+          pending.resumeResponse?.()
+        }
+      },
+      resolve,
+      reject,
+      onMessage: AsyncResource.bind((value: unknown) => this.#handlePeerMessage(pending, value))
+    }
+    peer.pending.set(id, pending)
+
+    let responseTimeout: ReturnType<typeof setTimeout> | null = null
+    if (this.#connectTimeout > 0) {
+      responseTimeout = setTimeout(() => {
+        peer.pending.delete(id)
+        pending.reject(new ConnectTimeoutError(`Timeout while waiting for response from ${server.serverId}.`))
+      }, this.#connectTimeout)
+    }
+    responseTimeout?.unref()
 
     const message: RequestMessage = {
       type: Message.REQUEST,
@@ -415,21 +408,48 @@ export class Interceptor {
       message.query = (request as any).query
     }
 
-    handler.onRequestStart?.(controller as any, {})
-    peer.port.postMessage(message, transferList)
-    const result = await executeWithTimeout(responsePromise, this.#connectTimeout)
-    if (result === kTimeout) {
-      throw new ConnectTimeoutError(`Timeout while waiting for response from ${server.serverId}.`)
+    try {
+      handler.onRequestStart?.(pending.controller as any, {})
+      peer.port.postMessage(message, transferList)
+      await responsePromise
+    } catch (error) {
+      peer.pending.delete(id)
+      throw error
+    } finally {
+      if (responseTimeout !== null) {
+        clearTimeout(responseTimeout)
+      }
     }
   }
 
-  async #getPeerMessagePort (serverId: string, origin: string, serverThreadId: number): Promise<Peer> {
-    const key = `${serverId}:${origin}`
+  async #ensurePeerMessagePort (server: Extract<MeshServer, { mode: 'thread' }>): Promise<Peer> {
+    const key = `${server.serverId}:${server.origin}`
     const existing = this.#peers.get(key)
+
     if (existing && !existing.closed) {
       return existing
     }
 
+    if (this.#connectTimeout <= 0) {
+      return this.#getPeerMessagePort(server.serverId, server.origin, server.threadId)
+    }
+
+    const peer = await executeWithTimeout(
+      this.#getPeerMessagePort(server.serverId, server.origin, server.threadId),
+      this.#connectTimeout,
+      kTimeout
+    )
+
+    /* c8 ignore next 3 - hard to test */
+    if (peer === kTimeout) {
+      throw new ConnectTimeoutError(`Timeout while connecting to ${server.serverId}.`)
+    }
+
+    return peer
+  }
+
+  async #getPeerMessagePort (serverId: string, origin: string, serverThreadId: number): Promise<Peer> {
+    const key = `${serverId}:${origin}`
     const channel = new MessageChannel()
     const diagnostics = {
       meshId: this.#options.meshId,
@@ -439,6 +459,7 @@ export class Interceptor {
       role: 'interceptor' as const,
       threadId
     }
+
     const peer: Peer = { port: channel.port1, pending: new Map(), closed: false, diagnostics }
     this.#peers.set(key, peer)
 
@@ -467,7 +488,12 @@ export class Interceptor {
       port: channel.port2
     }
 
-    await sendThreadMessage(serverThreadId, connectMessage, [channel.port2], this.#connectTimeout)
+    await sendThreadMessage(
+      serverThreadId,
+      connectMessage,
+      [channel.port2],
+      this.#connectTimeout > 0 ? this.#connectTimeout : undefined
+    )
 
     if (channels.peerConnect.hasSubscribers) {
       channels.peerConnect.publish(diagnostics)
@@ -478,6 +504,7 @@ export class Interceptor {
 
   #onPeerMessage (peer: Peer, value: unknown): void {
     const message = value as { type?: string; id?: string }
+
     if (!message.id) {
       return
     }
@@ -488,28 +515,33 @@ export class Interceptor {
     }
 
     peer.pending.delete(message.id)
+    pending.onMessage(value)
+  }
 
-    const callback = AsyncResource.bind(() => {
-      if (message.type === Message.ERROR) {
-        const error = (value as ErrorMessage).error
-        this.#publishRequestError(pending.request, pending.context, error)
-        runHooks(this.#hooks.onError, pending.request, null, pending.context, error)
-        pending.handler.onResponseError?.(pending.controller, error)
-        pending.reject(error)
-        return
-      }
+  #handlePeerMessage (pending: PendingRequest, value: unknown): void {
+    const message = value as { type?: string }
 
-      if (message.type === Message.RESPONSE) {
-        this.#handleResponse(pending, value as ResponseMessage)
-      }
-    })
+    if (message.type === Message.ERROR) {
+      const error = (value as ErrorMessage).error
+      this.#publishRequestError(pending.request, pending.context, error)
 
-    callback()
+      runHooks(this.#hooks.onError, pending.request, null, pending.context, error)
+
+      pending.handler.onResponseError?.(pending.controller, error)
+      pending.resolve()
+
+      return
+    }
+
+    if (message.type === Message.RESPONSE) {
+      this.#handleResponse(pending, value as ResponseMessage)
+    }
   }
 
   #handleResponse (pending: PendingRequest, response: ResponseMessage): void {
     publishRequestHeaders(pending.request, response, pending.context)
     runHooks(this.#hooks.onResponse, pending.request, response, pending.context)
+
     try {
       if (pending.controller.aborted) {
         pending.handler.onResponseError?.(pending.controller, pending.controller.reason as Error)
@@ -538,8 +570,9 @@ export class Interceptor {
 
     if (response.bodyPort) {
       const body = new MessagePortReadable({ port: response.bodyPort })
-      pending.controller.on('pause', () => body.pause())
-      pending.controller.on('resume', () => body.resume())
+      pending.pauseResponse = () => body.pause()
+      pending.resumeResponse = () => body.resume()
+
       body.on('data', chunk => {
         try {
           pending.handler.onResponseData?.(pending.controller as any, Buffer.from(chunk))
@@ -550,6 +583,7 @@ export class Interceptor {
           pending.resolve()
         }
       })
+
       body.on('end', () => {
         try {
           pending.handler.onResponseEnd?.(pending.controller as any, {})
@@ -563,17 +597,23 @@ export class Interceptor {
 
         this.#finishResponse(pending, response)
       })
+
       body.on('error', error => {
         this.#publishRequestError(pending.request, pending.context, error)
         pending.handler.onResponseError?.(pending.controller as any, error)
         pending.resolve()
       })
+
       return
     }
 
     try {
       if (response.body !== undefined) {
-        pending.handler.onResponseData?.(pending.controller as any, Buffer.from(response.body))
+        const body =
+          typeof response.body === 'string'
+            ? Buffer.from(response.body)
+            : Buffer.from(response.body.buffer, response.body.byteOffset, response.body.byteLength)
+        pending.handler.onResponseData?.(pending.controller as any, body)
       }
 
       pending.handler.onResponseEnd?.(pending.controller as any, {})

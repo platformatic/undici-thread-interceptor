@@ -1,5 +1,4 @@
 import inject from 'light-my-request'
-import { once } from 'node:events'
 import type { Readable } from 'node:stream'
 import type { MessagePort } from 'node:worker_threads'
 import { MessageChannel, threadId } from 'node:worker_threads'
@@ -7,6 +6,7 @@ import { MessageChannel, threadId } from 'node:worker_threads'
 import { channels } from './diagnostics.ts'
 import { MessagePortReadable, MessagePortWritable } from './message-port-streams.ts'
 import {
+  MAX_BODY,
   Message,
   type CoordinatorConnectMessage,
   type MeshServer,
@@ -63,17 +63,18 @@ export class Server {
   #boundWorkerMessageListener: (value: unknown) => void
 
   constructor (options: ServerOptions) {
+    if (options.domain.includes('://') || /^[a-z][a-z0-9+.-]*:/i.test(options.domain)) {
+      throw new Error('domain must not include a protocol')
+    }
+
+    this.serverId = options.serverId ?? createId()
+
     this.#options = options
     this.#hooks = {
       onRequest: normalizeHooks(options.onRequest),
       onResponse: normalizeHooks(options.onResponse),
       onError: normalizeHooks(options.onError)
     }
-    this.serverId = options.serverId ?? createId()
-    if (options.domain.includes('://') || /^[a-z][a-z0-9+.-]*:/i.test(options.domain)) {
-      throw new Error('domain must not include a protocol')
-    }
-
     this.#origin = normalizeOrigin(options.domain)
     this.#server = options.server
     this.#metadata = options.metadata
@@ -268,9 +269,10 @@ export class Server {
     this.#queue.push({ port, message: value as RequestMessage, rejected: this.#closed })
   }
 
-  async #processQueuedRequest ({ port, message, rejected }: QueuedRequest): Promise<void> {
+  #processQueuedRequest ({ port, message, rejected }: QueuedRequest): void {
     const request = this.#handleRequest(port, message, rejected)
     this.#activeRequests.add(request)
+
     request
       .catch(error => {
         port.postMessage({ type: Message.ERROR, id: message.id, error })
@@ -278,7 +280,6 @@ export class Server {
       .finally(() => {
         this.#activeRequests.delete(request)
       })
-    await request
   }
 
   async #handleRequest (port: MessagePort, message: RequestMessage, rejected: boolean): Promise<void> {
@@ -291,6 +292,7 @@ export class Server {
         headers: {},
         body: Buffer.alloc(0)
       })
+
       return
     }
 
@@ -368,8 +370,6 @@ export class Server {
 
   async #sendResponse (port: MessagePort, id: string, res: any): Promise<void> {
     const headers = res.headers ?? {}
-    const hasContentLength = headers['content-length'] !== undefined
-    const length = Number(headers['content-length'] ?? 0)
     const message: ResponseMessage = {
       type: Message.RESPONSE,
       id,
@@ -377,9 +377,11 @@ export class Server {
       statusMessage: res.statusMessage,
       headers
     }
+    const contentLength = headers['content-length']
+    const length = contentLength === undefined ? undefined : Number(contentLength)
     const transferList: MessagePort[] = []
 
-    if (hasContentLength && length >= 0 && length < 32 * 1024) {
+    if (length !== undefined && length >= 0 && length < MAX_BODY) {
       message.body = await this.#collectBody(res.stream())
     } else {
       const transferable = MessagePortWritable.asTransferable(res.stream())
@@ -392,14 +394,11 @@ export class Server {
 
   async #collectBody (stream: Readable): Promise<Buffer> {
     const chunks: Buffer[] = []
-    stream.resume()
-    stream.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-    await Promise.race([
-      once(stream, 'end'),
-      once(stream, 'error').then(([error]) => {
-        throw error
-      })
-    ])
+
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    }
+
     return Buffer.concat(chunks)
   }
 }
