@@ -290,7 +290,7 @@ export class Interceptor {
     const context: Record<PropertyKey, unknown> = {}
     const request = {
       ...opts,
-      headers: sanitizeHeaders({ ...(opts.headers as Record<string, string>), host: url.host })
+      headers: sanitizeHeaders(opts.headers as any, url.host)
     } as DispatchOptions
     runHooks(this.#hooks.onRequest, request, context)
 

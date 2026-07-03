@@ -6,6 +6,9 @@ import { postMessageToThread, threadId } from 'node:worker_threads'
 
 export type Hooks<T extends (...args: any[]) => unknown> = T | T[]
 type ThreadTransferList = Parameters<typeof postMessageToThread>[2]
+type HeaderValue = string | string[] | number | undefined
+type HeaderRecord = Record<string, HeaderValue>
+type HeaderEntries = Array<[string, HeaderValue]>
 
 export const kTimeout = Symbol('undici.thread-interceptor..timeout')
 
@@ -32,21 +35,43 @@ export function normalizeOrigin (origin: string | URL): string {
   return `http:${value}`
 }
 
-export function sanitizeHeaders (
-  headers: Record<string, string | string[] | number | undefined> = {}
-): Record<string, string | string[] | number | undefined> {
-  const result: Record<string, string | string[] | number | undefined> = {}
+export function sanitizeHeaders (headers: HeaderRecord | HeaderEntries | undefined, host: string): HeaderRecord {
+  if (Array.isArray(headers)) {
+    const result: HeaderRecord = { host }
 
-  for (const [key, value] of Object.entries(headers)) {
-    const normalized = key.toLowerCase()
-
-    if (normalized === 'connection' || normalized === 'transfer-encoding') {
-      continue
+    for (const [key, value] of headers) {
+      if (key !== 'connection' && key !== 'Connection' && key !== 'transfer-encoding' && key !== 'Transfer-Encoding') {
+        result[key] = value
+      }
     }
 
-    result[key] = value
+    return result
   }
 
+  if (!headers) {
+    return { host }
+  }
+
+  const hasConnection = Object.hasOwn(headers, 'connection')
+  const hasTitleConnection = Object.hasOwn(headers, 'Connection')
+  const hasTransferEncoding = Object.hasOwn(headers, 'transfer-encoding')
+  const hasTitleTransferEncoding = Object.hasOwn(headers, 'Transfer-Encoding')
+
+  if (
+    headers.host === host &&
+    !hasConnection &&
+    !hasTitleConnection &&
+    !hasTransferEncoding &&
+    !hasTitleTransferEncoding
+  ) {
+    return headers
+  }
+
+  const result = Object.assign({}, headers, { host })
+  delete result.connection
+  delete result.Connection
+  delete result['transfer-encoding']
+  delete result['Transfer-Encoding']
   return result
 }
 

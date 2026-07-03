@@ -1,4 +1,4 @@
-import { ok, strictEqual } from 'node:assert'
+import { deepStrictEqual, ok, strictEqual } from 'node:assert'
 import { once } from 'node:events'
 import { performance } from 'node:perf_hooks'
 import { test } from 'node:test'
@@ -7,7 +7,7 @@ import { Agent, request } from 'undici'
 
 import { createInterceptor } from '../src/index.ts'
 import { createRequestQueue } from '../src/request-queue.ts'
-import { normalizeOrigin, sendThreadMessage } from '../src/utils.ts'
+import { normalizeOrigin, sanitizeHeaders, sendThreadMessage } from '../src/utils.ts'
 import { createMesh, waitForMeshServers, workerURL } from './helper.ts'
 
 test('yields the worker event loop under high request load', async t => {
@@ -71,6 +71,24 @@ test('yields the worker event loop under high request load', async t => {
 test('reports queue size while draining and covers utility edge branches', async () => {
   strictEqual(normalizeOrigin('https://Example.com/path'), 'https:example.com')
   strictEqual(normalizeOrigin('http:already.local'), 'http:already.local')
+  deepStrictEqual(sanitizeHeaders(undefined, 'headers.local'), { host: 'headers.local' })
+  deepStrictEqual(
+    sanitizeHeaders(
+      [
+        ['Connection', 'keep-alive'],
+        ['Transfer-Encoding', 'chunked'],
+        ['x-foo', 'bar']
+      ],
+      'headers.local'
+    ),
+    { host: 'headers.local', 'x-foo': 'bar' }
+  )
+  deepStrictEqual(
+    sanitizeHeaders({ Connection: 'keep-alive', 'Transfer-Encoding': 'chunked', host: 'old.local', 'x-foo': 'bar' }, 'headers.local'),
+    { host: 'headers.local', 'x-foo': 'bar' }
+  )
+  const headers = { host: 'headers.local', 'x-foo': 'bar' }
+  strictEqual(sanitizeHeaders(headers, 'headers.local'), headers)
 
   const blocker = Promise.withResolvers<void>()
   const queue = createRequestQueue('queue-edge', async callback => {

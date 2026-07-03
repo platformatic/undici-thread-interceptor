@@ -83,7 +83,9 @@ test('removes unwanted hop-by-hop request headers', async t => {
     headers: {
       'x-foo': 'bar',
       connection: 'keep-alive',
-      'transfer-encoding': 'chunked'
+      Connection: 'keep-alive',
+      'transfer-encoding': 'chunked',
+      'Transfer-Encoding': 'chunked'
     },
     dispatcher: agent
   })
