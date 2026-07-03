@@ -1,17 +1,16 @@
 import { ok, strictEqual } from 'node:assert'
 import { once } from 'node:events'
+import { performance } from 'node:perf_hooks'
 import { test } from 'node:test'
-import { type MessagePort, Worker } from 'node:worker_threads'
+import { threadId, type MessagePort, Worker } from 'node:worker_threads'
 import { Agent, request } from 'undici'
 
 import { createInterceptor } from '../src/index.ts'
-import {
-  createMesh,
-  waitForMeshServers,
-  workerURL
-} from './helper.ts'
+import { createRequestQueue } from '../src/request-queue.ts'
+import { normalizeOrigin, sendThreadMessage } from '../src/utils.ts'
+import { createMesh, waitForMeshServers, workerURL } from './helper.ts'
 
-test('v2 yields the worker event loop under high request load', async t => {
+test('yields the worker event loop under high request load', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'event-loop-yielding')
   const worker = new Worker(workerURL('slow-worker.ts'), {
     workerData: {
@@ -67,4 +66,69 @@ test('v2 yields the worker event loop under high request load', async t => {
   const intervalCount = await intervalCountPromise
 
   ok(intervalCount > 2, `Worker event loop executed ${intervalCount} intervals during heavy load`)
+})
+
+test('reports queue size while draining and covers utility edge branches', async () => {
+  strictEqual(normalizeOrigin('https://Example.com/path'), 'https:example.com')
+  strictEqual(normalizeOrigin('http:already.local'), 'http:already.local')
+
+  const blocker = Promise.withResolvers<void>()
+  const queue = createRequestQueue('queue-edge', async callback => {
+    callback()
+    await blocker.promise
+  })
+  const release = Promise.withResolvers<void>()
+  queue.push(release.resolve)
+  strictEqual(queue.size(), 1)
+  const drained = queue.drained()
+  ok(drained instanceof Promise)
+  release.resolve()
+  blocker.resolve()
+  await drained
+
+  process.once('workerMessage', () => {
+    throw new Error('worker message failed')
+  })
+  await sendThreadMessage(threadId, {}).catch(error => {
+    strictEqual(error.message, 'worker message failed')
+  })
+
+  process.once('workerMessage', () => {
+    // eslint-disable-next-line no-throw-literal
+    throw 'worker message failed'
+  })
+  await sendThreadMessage(threadId, {}).catch(error => {
+    strictEqual(error.message, 'worker message failed')
+  })
+})
+
+test('emits a warning when queue processing fails outside the callback', async t => {
+  const descriptor = Object.getOwnPropertyDescriptor(performance.nodeTiming, 'uvMetricsInfo')
+  t.after(() => {
+    if (descriptor) {
+      Object.defineProperty(performance.nodeTiming, 'uvMetricsInfo', descriptor)
+    }
+  })
+  Object.defineProperty(performance.nodeTiming, 'uvMetricsInfo', {
+    configurable: true,
+    get () {
+      throw new Error('metrics failed')
+    }
+  })
+
+  const emitWarning = process.emitWarning
+  const warning = Promise.withResolvers<string | Error>()
+  process.emitWarning = ((value: string | Error) => {
+    warning.resolve(value)
+    return true
+  }) as typeof process.emitWarning
+  t.after(() => {
+    process.emitWarning = emitWarning
+  })
+
+  const queue = createRequestQueue('warning-edge', () => {})
+  queue.push(undefined)
+  const message = await warning.promise
+
+  strictEqual(message, 'Request queue warning-edge failed: metrics failed')
 })

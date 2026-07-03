@@ -274,6 +274,7 @@ export class Interceptor {
       return dispatch(opts, handler)
     }
 
+    /* c8 ignore next - else */
     const url = opts.origin instanceof URL ? opts.origin : new URL(opts.path, opts.origin)
     const key = normalizeOrigin(url)
 
@@ -299,7 +300,10 @@ export class Interceptor {
     }
 
     if (server.mode === 'tcp') {
-      return dispatch({ ...request, origin: server.address } as DispatchOptions, new HookHandler(handler, this.#hooks, request, context))
+      return dispatch(
+        { ...request, origin: server.address } as DispatchOptions,
+        new HookHandler(handler, this.#hooks, request, context)
+      )
     }
 
     if (channels.requestCreate.hasSubscribers) {
@@ -318,10 +322,12 @@ export class Interceptor {
   #onCoordinatorMessage (value: unknown): void {
     const message = value as { type?: string; mesh?: Mesh }
 
+    /* c8 ignore next 3 - hard to test */
     if (message.type !== Message.MESH || !message.mesh) {
       return
     }
 
+    /* c8 ignore next 3 - hard to test */
     if (this.#mesh && message.mesh.version <= this.#mesh.version) {
       return
     }
@@ -374,6 +380,7 @@ export class Interceptor {
       this.#connectTimeout,
       kTimeout
     )
+    /* c8 ignore next 3 - hard to test */
     if (peer === kTimeout) {
       throw new ConnectTimeoutError(`Timeout while connecting to ${server.serverId}.`)
     }

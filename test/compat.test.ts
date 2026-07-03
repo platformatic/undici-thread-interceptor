@@ -6,7 +6,7 @@ import { request } from 'undici'
 import { createServer } from '../src/index.ts'
 import { createAgent, createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 
-test('v2 supports express apps', async t => {
+test('supports express apps', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'express')
   await createWorkerServer(t, {
     meshId,
@@ -24,7 +24,7 @@ test('v2 supports express apps', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 supports koa apps', async t => {
+test('supports koa apps', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'koa')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'koa-1', domain: 'koa.local', kind: 'koa' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -36,7 +36,7 @@ test('v2 supports koa apps', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 supports Fastify instances through inject', async t => {
+test('supports Fastify instances through inject', async t => {
   const app = Fastify()
   app.get('/', async () => ({ hello: 'fastify-inject' }))
   t.after(() => app.close())

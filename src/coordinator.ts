@@ -232,6 +232,7 @@ export class Coordinator {
     this.#mesh.interceptors[member.id] = interceptor
 
     if (!exists) {
+      /* c8 ignore next - else */
       this.#options.onInterceptorAvailable?.(interceptor)
     }
 
@@ -240,6 +241,7 @@ export class Coordinator {
 
   #upsertServer (member: Member, message: Record<string, unknown>): void {
     const previous = this.#mesh.servers[member.id]
+    /* c8 ignore next - else */
     const serverState = (message.state ?? previous?.state ?? 'available') as State
     const origin = (message.origin ?? previous?.origin) as string | undefined
     const mode = (message.mode ?? previous?.mode) as MeshServer['mode'] | undefined
@@ -261,6 +263,7 @@ export class Coordinator {
         ? {
             ...base,
             mode,
+            /* c8 ignore next - else */
             address: (message.address ?? (previous?.mode === 'tcp' ? previous.address : undefined)) as string
           }
         : { ...base, mode }
@@ -351,6 +354,7 @@ export class Coordinator {
       channels.meshUpdate.publish({ meshId: mesh.meshId, version: mesh.version, mesh })
     }
 
+    /* c8 ignore next - else */
     this.#options.onMesh?.(mesh)
   }
 

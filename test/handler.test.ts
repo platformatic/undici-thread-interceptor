@@ -5,7 +5,7 @@ import { Agent, request, type Dispatcher } from 'undici'
 
 import { createAgent, createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 
-test('v2 supports undici handler pause and resume lifecycle', async t => {
+test('supports undici handler pause and resume lifecycle', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'handler-lifecycle')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'handler.local' })
   const { interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -50,7 +50,7 @@ test('v2 supports undici handler pause and resume lifecycle', async t => {
   deepStrictEqual(calls, ['request-start', 'response-start'])
 })
 
-test('v2 preserves AsyncLocalStorage through composed interceptors', async t => {
+test('preserves AsyncLocalStorage through composed interceptors', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'async-local-storage')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'als.local' })
   const { interceptor } = await createAgent(t, meshId, coordinatorThreadId)

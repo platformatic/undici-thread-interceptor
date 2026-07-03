@@ -3,14 +3,9 @@ import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import { request } from 'undici'
 
-import {
-  createAgent,
-  createMesh,
-  createWorkerServer,
-  waitForMeshServers
-} from './helper.ts'
+import { createAgent, createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 
-test('v2 returns buffer responses', async t => {
+test('returns buffer responses', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'buffer')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'buffer.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -22,7 +17,7 @@ test('v2 returns buffer responses', async t => {
   deepStrictEqual(Buffer.from(await body.arrayBuffer()), Buffer.from('hello'))
 })
 
-test('v2 returns binary responses unchanged', async t => {
+test('returns binary responses unchanged', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'binary')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'binary.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -34,7 +29,7 @@ test('v2 returns binary responses unchanged', async t => {
   deepStrictEqual(Buffer.from(await body.arrayBuffer()), Buffer.from([0, 1, 2, 3, 255]))
 })
 
-test('v2 handles responses without explicit headers', async t => {
+test('handles responses without explicit headers', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'no-headers')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'no-headers.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -47,7 +42,7 @@ test('v2 handles responses without explicit headers', async t => {
   strictEqual(await body.text(), 'text')
 })
 
-test('v2 returns empty streamed responses', async t => {
+test('returns empty streamed responses', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'empty-stream')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'empty-stream.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -59,7 +54,7 @@ test('v2 returns empty streamed responses', async t => {
   strictEqual(await body.text(), '')
 })
 
-test('v2 propagates streamed response errors without content length', async t => {
+test('propagates streamed response errors without content length', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'stream-response-error-no-length')
   await createWorkerServer(t, {
     meshId,
@@ -70,13 +65,15 @@ test('v2 propagates streamed response errors without content length', async t =>
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
   await waitForMeshServers(interceptor, 'http:stream-response-error-no-length.local', 1)
 
-  const { statusCode, body } = await request('http://stream-response-error-no-length.local/stream-error-2', { dispatcher: agent })
+  const { statusCode, body } = await request('http://stream-response-error-no-length.local/stream-error-2', {
+    dispatcher: agent
+  })
 
   strictEqual(statusCode, 200)
   await rejects(body.text(), { message: 'kaboom' })
 })
 
-test('v2 removes unwanted hop-by-hop request headers', async t => {
+test('removes unwanted hop-by-hop request headers', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'headers')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'headers.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -99,7 +96,7 @@ test('v2 removes unwanted hop-by-hop request headers', async t => {
   })
 })
 
-test('v2 filters nullish headers before server injection', async t => {
+test('filters nullish headers before server injection', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'nullish-headers')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'nullish-headers.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -124,7 +121,7 @@ test('v2 filters nullish headers before server injection', async t => {
   strictEqual(headers.bar, undefined)
 })
 
-test('v2 propagates dispatcher query options to server injection', async t => {
+test('propagates dispatcher query options to server injection', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'query')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'query.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -141,7 +138,7 @@ test('v2 propagates dispatcher query options to server injection', async t => {
   deepStrictEqual(JSON.parse(response.body.toString()), { hello: 'world' })
 })
 
-test('v2 returns a bad request response when a stream body errors', async t => {
+test('returns a bad request response when a stream body errors', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'stream-error')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'stream-error.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -161,7 +158,7 @@ test('v2 returns a bad request response when a stream body errors', async t => {
   deepStrictEqual(await body.json(), { statusCode: 400, error: 'Bad Request', message: 'kaboom' })
 })
 
-test('v2 POST string body', async t => {
+test('POST string body', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'post-string')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'post-string.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -178,7 +175,7 @@ test('v2 POST string body', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 POST stream body', async t => {
+test('POST stream body', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'post-stream')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'post-stream.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -195,7 +192,7 @@ test('v2 POST stream body', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 POST buffer stream body', async t => {
+test('POST buffer stream body', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'post-buffer-stream')
   await createWorkerServer(t, {
     meshId,
@@ -217,7 +214,7 @@ test('v2 POST buffer stream body', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 correctly handles aborted requests', async t => {
+test('correctly handles aborted requests', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'abort-request')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'abort-request.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)

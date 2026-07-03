@@ -1,14 +1,17 @@
-import { ok, strictEqual } from 'node:assert'
+import { deepStrictEqual, ok, strictEqual } from 'node:assert'
 import diagnosticsChannel from 'node:diagnostics_channel'
 import { once } from 'node:events'
 import { test } from 'node:test'
-import { Worker } from 'node:worker_threads'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { MessageChannel, Worker } from 'node:worker_threads'
 import { request } from 'undici'
 
 import { createCoordinator, createServer } from '../src/index.ts'
+import { channels, getWrappedRequest, publishRequestHeaders } from '../src/diagnostics.ts'
+import { Message } from '../src/protocol.ts'
 import { createAgent, createMesh, createWorkerServer, waitForMeshServers, workerURL } from './helper.ts'
 
-test('v2 publishes undici diagnostics for thread-mode requests', async t => {
+test('publishes undici diagnostics for thread-mode requests', async t => {
   const events: Array<{ channel: string; message: any }> = []
   subscribe(t, 'undici:request:create', events)
   subscribe(t, 'undici:request:headers', events)
@@ -34,7 +37,7 @@ test('v2 publishes undici diagnostics for thread-mode requests', async t => {
   strictEqual(trailersEvent.request.completed, true)
 })
 
-test('v2 publishes undici diagnostics errors for thread-mode request failures', async t => {
+test('publishes undici diagnostics errors for thread-mode request failures', async t => {
   const events: Array<{ channel: string; message: any }> = []
   subscribe(t, 'undici:request:error', events)
   const { meshId, coordinatorThreadId } = await createMesh(t, 'diagnostics-error')
@@ -49,7 +52,7 @@ test('v2 publishes undici diagnostics errors for thread-mode request failures', 
   strictEqual(errorEvent.error.message, 'kaboom')
 })
 
-test('v2 skips synthetic undici diagnostics for tcp-mode targets', async t => {
+test('skips synthetic undici diagnostics for tcp-mode targets', async t => {
   const events: Array<{ channel: string; message: any }> = []
   subscribe(t, 'undici:request:create', events)
   const app = await import('fastify').then(({ default: Fastify }) => Fastify())
@@ -58,7 +61,13 @@ test('v2 skips synthetic undici diagnostics for tcp-mode targets', async t => {
   await app.listen({ port: 0 })
   const address = app.listeningOrigin
   const { meshId, coordinatorThreadId } = await createMesh(t, 'diagnostics-tcp')
-  const server = createServer({ meshId, coordinatorThreadId, serverId: 'server-1', domain: 'diagnostics-tcp.local', server: address })
+  const server = createServer({
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'diagnostics-tcp.local',
+    server: address
+  })
   t.after(() => server.close())
   await server.ready
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -71,7 +80,7 @@ test('v2 skips synthetic undici diagnostics for tcp-mode targets', async t => {
   ok(events.every(event => event.message.request.origin !== 'http://diagnostics-tcp.local'))
 })
 
-test('v2 publishes mesh update diagnostics in the coordinator thread', async t => {
+test('publishes mesh update diagnostics in the coordinator thread', async t => {
   const meshId = 'v2-diagnostics-mesh'
   const coordinator = new Worker(workerURL('coordinator.ts'), { workerData: { meshId, diagnostics: true } })
   t.after(() => coordinator.terminate())
@@ -91,7 +100,7 @@ test('v2 publishes mesh update diagnostics in the coordinator thread', async t =
   strictEqual(message.message.mesh.servers['server-1'].origin, 'http:diagnostics-mesh.local')
 })
 
-test('v2 publishes peer connect and disconnect diagnostics', async t => {
+test('publishes peer connect and disconnect diagnostics', async t => {
   const events: Array<{ channel: string; message: any }> = []
   subscribe(t, 'undici-thread-interceptor:peer:connect', events)
   subscribe(t, 'undici-thread-interceptor:peer:disconnect', events)
@@ -109,15 +118,22 @@ test('v2 publishes peer connect and disconnect diagnostics', async t => {
   const { body } = await request('http://diagnostics-peer.local', { dispatcher: agent })
   await body.text()
   await waitForDiagnosticsCount(worker, 'peer:connect', 1)
-  strictEqual(events.find(event => event.channel === 'undici-thread-interceptor:peer:connect')?.message.serverId, 'server-1')
+  strictEqual(
+    events.find(event => event.channel === 'undici-thread-interceptor:peer:connect')?.message.serverId,
+    'server-1'
+  )
   strictEqual(worker.diagnostics.find(event => event.channel === 'peer:connect')?.message.serverId, 'server-1')
 
   interceptor.close()
   await waitForDiagnosticsCount(worker, 'peer:disconnect', 1)
-  ok(events.some(event => event.channel === 'undici-thread-interceptor:peer:disconnect' && event.message.serverId === 'server-1'))
+  ok(
+    events.some(
+      event => event.channel === 'undici-thread-interceptor:peer:disconnect' && event.message.serverId === 'server-1'
+    )
+  )
 })
 
-test('v2 publishes server diagnostics for thread-mode requests', async t => {
+test('publishes server diagnostics for thread-mode requests', async t => {
   const events: Array<{ channel: string; message: any }> = []
   subscribe(t, 'http.server.request.start', events)
   subscribe(t, 'http.server.response.finish', events)
@@ -148,6 +164,114 @@ test('v2 publishes server diagnostics for thread-mode requests', async t => {
   strictEqual(start.request.headers.host, 'diagnostics-server.local')
   strictEqual(finish.request, start.request)
   strictEqual(finish.response.statusCode, 200)
+})
+
+test('converts array request and response headers in diagnostics payloads', async () => {
+  const context: Record<PropertyKey, unknown> = {}
+  const diagnosticRequest = {
+    origin: 'http://diagnostics.local',
+    method: 'GET',
+    path: '/',
+    headers: {
+      accept: ['text/plain', 'application/json'],
+      empty: undefined
+    }
+  }
+
+  const wrapped = getWrappedRequest(diagnosticRequest, context)
+  deepStrictEqual(wrapped.headers, ['accept', 'text/plain', 'accept', 'application/json'])
+
+  const { promise, resolve } = Promise.withResolvers<{ response: { headers: Array<string | number> } }>()
+  const subscriber = (message: unknown) => resolve(message as { response: { headers: Array<string | number> } })
+  channels.requestHeaders.subscribe(subscriber)
+  try {
+    publishRequestHeaders(
+      diagnosticRequest,
+      { statusCode: 200, headers: { vary: ['accept', 'origin'], empty: undefined } },
+      context
+    )
+  } finally {
+    channels.requestHeaders.unsubscribe(subscriber)
+  }
+
+  const message = await promise
+  deepStrictEqual(message.response.headers, ['vary', 'accept', 'vary', 'origin'])
+})
+
+test('converts missing response headers to an empty diagnostics header list', async () => {
+  const context: Record<PropertyKey, unknown> = {}
+  const diagnosticRequest = {
+    origin: 'http://diagnostics.local',
+    method: 'GET',
+    path: '/',
+    headers: {}
+  }
+
+  const { promise, resolve } = Promise.withResolvers<{ response: { headers: Array<string | number> } }>()
+  const subscriber = (message: unknown) => resolve(message as { response: { headers: Array<string | number> } })
+  channels.requestHeaders.subscribe(subscriber)
+  try {
+    publishRequestHeaders(diagnosticRequest, { statusCode: 204 }, context)
+  } finally {
+    channels.requestHeaders.unsubscribe(subscriber)
+  }
+
+  const message = await promise
+  deepStrictEqual(message.response.headers, [])
+})
+
+test('wraps diagnostics requests with defaults and caches the wrapper', () => {
+  const context: Record<PropertyKey, unknown> = {}
+  const diagnosticRequest = {
+    origin: new URL('https://Diagnostics.local/path'),
+    path: '/path'
+  }
+
+  const wrapped = getWrappedRequest(diagnosticRequest, context)
+  strictEqual(wrapped.origin, 'https://diagnostics.local/path')
+  strictEqual(wrapped.method, 'GET')
+  strictEqual(wrapped.host, 'diagnostics.local')
+  strictEqual(wrapped.idempotent, true)
+  strictEqual(wrapped.contentLength, null)
+  strictEqual(wrapped.contentType, null)
+  strictEqual(wrapped.body, null)
+  strictEqual(getWrappedRequest(diagnosticRequest, context), wrapped)
+})
+
+test('publishes peer disconnect diagnostics from a direct server peer', async t => {
+  const meshId = 'v2-diagnostics-direct-peer'
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+  const server = createServer({
+    meshId,
+    serverId: 'server-1',
+    domain: 'diagnostics-direct-peer.local',
+    server (_req: any, res: any) {
+      res.end('ok')
+    }
+  })
+  t.after(() => server.close())
+  await server.ready
+
+  const peerDisconnect = Promise.withResolvers<unknown>()
+  const subscriber = (message: unknown) => peerDisconnect.resolve(message)
+  channels.peerDisconnect.subscribe(subscriber)
+  const diagnosticsPeer = new MessageChannel()
+  server.addPeer(diagnosticsPeer.port1, 'interceptor-1')
+  diagnosticsPeer.port2.postMessage({ type: Message.PEER_DISCONNECT })
+  await Promise.race([peerDisconnect.promise, sleep(20)])
+  channels.peerDisconnect.unsubscribe(subscriber)
+  diagnosticsPeer.port2.close()
+
+  const closeEvent = Promise.withResolvers<unknown>()
+  const closeSubscriber = (message: unknown) => closeEvent.resolve(message)
+  channels.peerDisconnect.subscribe(closeSubscriber)
+  const closingPeer = new MessageChannel()
+  server.addPeer(closingPeer.port1, 'interceptor-2')
+  closingPeer.port1.close()
+  await Promise.race([closeEvent.promise, sleep(20)])
+  channels.peerDisconnect.unsubscribe(closeSubscriber)
+  closingPeer.port2.close()
 })
 
 function subscribe (t: test.TestContext, name: string, events: Array<{ channel: string; message: any }>): void {

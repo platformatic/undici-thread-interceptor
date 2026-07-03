@@ -3,15 +3,10 @@ import { test } from 'node:test'
 import Fastify from 'fastify'
 import { Agent, getGlobalDispatcher, request, setGlobalDispatcher } from 'undici'
 
-import { createCoordinator, createInterceptor, createServer } from '../src/index.ts'
-import {
-  createAgent,
-  createMesh,
-  createWorkerServer,
-  waitForMeshServers
-} from './helper.ts'
+import { Interceptor, createCoordinator, createInterceptor, createServer } from '../src/index.ts'
+import { createAgent, createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 
-test('v2 dispatches to a thread server', async t => {
+test('dispatches to a thread server', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'basic')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'myserver.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -23,7 +18,7 @@ test('v2 dispatches to a thread server', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 routes multiple origins in one mesh', async t => {
+test('routes multiple origins in one mesh', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'multiple-origins')
   await createWorkerServer(t, {
     meshId,
@@ -48,7 +43,7 @@ test('v2 routes multiple origins in one mesh', async t => {
   deepStrictEqual(await body.json(), { hello: 'two' })
 })
 
-test('v2 delegates non-matching domains to undici', async t => {
+test('delegates non-matching domains to undici', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'pass-through')
   const app = Fastify()
   app.get('/', async () => ({ hello: 'world' }))
@@ -62,7 +57,7 @@ test('v2 delegates non-matching domains to undici', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 treats configured domains case-insensitively', async t => {
+test('treats configured domains case-insensitively', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'case-insensitive')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'case.local' })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId, { domain: '.LOCAL' })
@@ -74,14 +69,14 @@ test('v2 treats configured domains case-insensitively', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('v2 delegates absent origins to undici', async t => {
+test('delegates absent origins to undici', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'absent')
   const { agent } = await createAgent(t, meshId, coordinatorThreadId)
 
   await rejects(request('http://missing.local', { dispatcher: agent }))
 })
 
-test('v2 supports fetch through a global dispatcher', async t => {
+test('supports fetch through a global dispatcher', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'fetch')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'fetch.local' })
   const { interceptor } = await createAgent(t, meshId, coordinatorThreadId)
@@ -99,7 +94,7 @@ test('v2 supports fetch through a global dispatcher', async t => {
   strictEqual(await response.text(), 'hello world')
 })
 
-test('v2 supports same-thread coordinator server and interceptor', async t => {
+test('supports same-thread coordinator server and interceptor', async t => {
   const meshId = 'v2-same-thread'
   const coordinator = createCoordinator({ meshId })
   t.after(() => coordinator.destroy())
@@ -123,4 +118,47 @@ test('v2 supports same-thread coordinator server and interceptor', async t => {
 
   strictEqual(statusCode, 200)
   deepStrictEqual(await body.json(), { hello: 'self' })
+})
+
+test('interceptor delegates requests without an origin and close is idempotent', async () => {
+  const interceptor = new Interceptor({ meshId: 'v2-routing-direct-delegate', domain: '.local' })
+  try {
+    await interceptor.ready
+    let delegated = false
+
+    const handled = interceptor.dispatch(
+      (_opts, _handler) => {
+        delegated = true
+        return false
+      },
+      { path: '/', method: 'GET' } as any,
+      {}
+    )
+
+    strictEqual(handled, false)
+    strictEqual(delegated, true)
+  } finally {
+    interceptor.close()
+    interceptor.close()
+  }
+})
+
+test('interceptor updates metadata in the coordinator mesh', async t => {
+  const meshId = 'v2-routing-interceptor-metadata'
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+  const interceptor = new Interceptor({ meshId, domain: '.local', interceptorId: 'interceptor-1' })
+  t.after(() => interceptor.close())
+  await interceptor.ready
+
+  interceptor.updateMetadata({ updated: true })
+
+  for (let i = 0; i < 50; i++) {
+    if (coordinator.getMesh().interceptors['interceptor-1']?.metadata) {
+      break
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+
+  deepStrictEqual(coordinator.getMesh().interceptors['interceptor-1'].metadata, { updated: true })
 })

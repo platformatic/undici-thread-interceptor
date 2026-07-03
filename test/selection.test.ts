@@ -3,14 +3,9 @@ import { test } from 'node:test'
 import { Agent, request } from 'undici'
 
 import { createInterceptor, NoAvailableTargetError } from '../src/index.ts'
-import {
-  createAgent,
-  createMesh,
-  createWorkerServer,
-  waitForMeshServers
-} from './helper.ts'
+import { createAgent, createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 
-test('v2 only selects available servers during load balancing', async t => {
+test('only selects available servers during load balancing', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'available-balancing')
   await createWorkerServer(t, {
     meshId,
@@ -36,7 +31,7 @@ test('v2 only selects available servers during load balancing', async t => {
   }
 })
 
-test('v2 allowTarget can deny a selected server', async t => {
+test('allowTarget can deny a selected server', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'allow-target-deny')
   await createWorkerServer(t, {
     meshId,
@@ -59,7 +54,7 @@ test('v2 allowTarget can deny a selected server', async t => {
   await rejects(request('http://deny.local', { dispatcher: new Agent().compose(interceptor) }), NoAvailableTargetError)
 })
 
-test('v2 allowTarget skips denied servers and selects another available target', async t => {
+test('allowTarget skips denied servers and selects another available target', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'allow-target-skip')
   await createWorkerServer(t, {
     meshId,
@@ -99,7 +94,7 @@ test('v2 allowTarget skips denied servers and selects another available target',
   deepStrictEqual(await body.json(), { hello: 'allowed' })
 })
 
-test('v2 paused server is not selected', async t => {
+test('paused server is not selected', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'paused')
   await createWorkerServer(t, {
     meshId,
@@ -114,7 +109,7 @@ test('v2 paused server is not selected', async t => {
   await rejects(request('http://paused.local', { dispatcher: agent }), NoAvailableTargetError)
 })
 
-test('v2 fails when origin exists without available servers', async t => {
+test('fails when origin exists without available servers', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'unavailable')
   await createWorkerServer(t, {
     meshId,
@@ -129,7 +124,7 @@ test('v2 fails when origin exists without available servers', async t => {
   await rejects(request('http://unavailable.local', { dispatcher: agent }), NoAvailableTargetError)
 })
 
-test('v2 initializes round-robin cursor from a randomized position', async t => {
+test('initializes round-robin cursor from a randomized position', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'round-robin')
   await createWorkerServer(t, {
     meshId,

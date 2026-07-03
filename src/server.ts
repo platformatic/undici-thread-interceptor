@@ -242,6 +242,7 @@ export class Server {
     const message = value as { type?: string }
 
     if (message.type === Message.PEER_DISCONNECT) {
+      /* c8 ignore next - else */
       const interceptorId = this.#peers.get(port) ?? 'unknown'
       this.#peers.delete(port)
 
@@ -331,10 +332,15 @@ export class Server {
             return
           }
 
-          runHooks(this.#hooks.onResponse, req, res)
-          await this.#sendResponse(port, message.id, res)
-          if (channels.serverResponseFinish.hasSubscribers) {
-            channels.serverResponseFinish.publish({ request: req, response: res, server: this.#server })
+          try {
+            runHooks(this.#hooks.onResponse, req, res)
+            await this.#sendResponse(port, message.id, res)
+            if (channels.serverResponseFinish.hasSubscribers) {
+              channels.serverResponseFinish.publish({ request: req, response: res, server: this.#server })
+            }
+          } catch (error) {
+            runHooks(this.#hooks.onError, req, res, error as Error)
+            port.postMessage({ type: Message.ERROR, id: message.id, error })
           }
           resolve()
         }

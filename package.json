@@ -32,6 +32,8 @@
     "lint": "eslint --cache",
     "typecheck": "tsc -p . --noEmit",
     "format": "prettier -w src test",
+    "bench": "node bench/bench.ts",
+    "bench:compare": "node bench/compare.ts",
     "test": "c8 -c test/config/c8-local.json node --test --test-reporter=cleaner-spec-reporter 'test/*.test.ts' 'test/*/*.test.ts'",
     "test:ci": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90 --test-reporter=cleaner-spec-reporter 'test/*.test.ts' 'test/*/*.test.ts'",
     "ci": "npm run build && npm run lint && npm run test:ci"

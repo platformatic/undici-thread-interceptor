@@ -8,7 +8,7 @@ import { MessageChannel, Worker } from 'node:worker_threads'
 import { MessagePortReadable, MessagePortWritable } from '../src/message-port-streams.ts'
 import { workerURL } from './helper.ts'
 
-test('v2 MessagePortWritable writes to MessagePortReadable', async () => {
+test('MessagePortWritable writes to MessagePortReadable', async () => {
   const channel = new MessageChannel()
   const readable = new MessagePortReadable({ port: channel.port1 })
   const writable = new MessagePortWritable({ port: channel.port2 })
@@ -22,7 +22,7 @@ test('v2 MessagePortWritable writes to MessagePortReadable', async () => {
   deepStrictEqual(Buffer.concat(chunks), Buffer.from('Hello, World!'))
 })
 
-test('v2 MessagePortReadable reports producer errors', async () => {
+test('MessagePortReadable reports producer errors', async () => {
   const channel = new MessageChannel()
   const readable = new MessagePortReadable({ port: channel.port1 })
   channel.port2.postMessage({ err: new Error('kaboom') })
@@ -32,7 +32,7 @@ test('v2 MessagePortReadable reports producer errors', async () => {
   strictEqual(error.message, 'kaboom')
 })
 
-test('v2 MessagePortWritable reports consumer errors', async () => {
+test('MessagePortWritable reports consumer errors', async () => {
   const channel = new MessageChannel()
   const writable = new MessagePortWritable({ port: channel.port1 })
   channel.port2.postMessage({ err: new Error('kaboom') })
@@ -42,7 +42,7 @@ test('v2 MessagePortWritable reports consumer errors', async () => {
   strictEqual(error.message, 'kaboom')
 })
 
-test('v2 MessagePortReadable closes after producer errors', async () => {
+test('MessagePortReadable closes after producer errors', async () => {
   const channel = new MessageChannel()
   const readable = new MessagePortReadable({ port: channel.port1 })
   const closed = new Promise<void>(resolve => readable.on('close', resolve))
@@ -54,7 +54,7 @@ test('v2 MessagePortReadable closes after producer errors', async () => {
   strictEqual(error.message, 'kaboom')
 })
 
-test('v2 MessagePortWritable closes after consumer errors', async () => {
+test('MessagePortWritable closes after consumer errors', async () => {
   const channel = new MessageChannel()
   const writable = new MessagePortWritable({ port: channel.port1 })
   const closed = new Promise<void>(resolve => writable.on('close', resolve))
@@ -66,7 +66,7 @@ test('v2 MessagePortWritable closes after consumer errors', async () => {
   strictEqual(error.message, 'kaboom')
 })
 
-test('v2 MessagePortWritable batches corked writes', async () => {
+test('MessagePortWritable batches corked writes', async () => {
   const channel = new MessageChannel()
   const readable = new MessagePortReadable({ port: channel.port1 })
   const writable = new MessagePortWritable({ port: channel.port2 })
@@ -83,7 +83,7 @@ test('v2 MessagePortWritable batches corked writes', async () => {
   deepStrictEqual(Buffer.concat(chunks), Buffer.from('Hello, batched World!'))
 })
 
-test('v2 MessagePortReadable receives data written before reading starts', async () => {
+test('MessagePortReadable receives data written before reading starts', async () => {
   const channel = new MessageChannel()
   const readable = new MessagePortReadable({ port: channel.port1 })
   const writable = new MessagePortWritable({ port: channel.port2 })
@@ -97,7 +97,7 @@ test('v2 MessagePortReadable receives data written before reading starts', async
   deepStrictEqual(Buffer.concat(chunks), Buffer.from('Hello, delayed World!'))
 })
 
-test('v2 MessagePortReadable reports remote port closure', async () => {
+test('MessagePortReadable reports remote port closure', async () => {
   const channel = new MessageChannel()
   const readable = new MessagePortReadable({ port: channel.port1 })
   const worker = new Worker(new URL('data:text/javascript,throw new Error("kaboom")'), {
@@ -112,7 +112,7 @@ test('v2 MessagePortReadable reports remote port closure', async () => {
   strictEqual(error.message, 'message port closed')
 })
 
-test('v2 MessagePortWritable reports remote port closure', async () => {
+test('MessagePortWritable reports remote port closure', async () => {
   const channel = new MessageChannel()
   const writable = new MessagePortWritable({ port: channel.port1 })
   const worker = new Worker(new URL('data:text/javascript,throw new Error("kaboom")'), {
@@ -127,7 +127,7 @@ test('v2 MessagePortWritable reports remote port closure', async () => {
   strictEqual(error.message, 'message port closed')
 })
 
-test('v2 MessagePortWritable.asTransferable streams body data', async () => {
+test('MessagePortWritable.asTransferable streams body data', async () => {
   const { port } = MessagePortWritable.asTransferable(Readable.from(['Hello, World!']))
   const readable = new MessagePortReadable({ port })
   const chunks: Buffer[] = []
@@ -138,7 +138,7 @@ test('v2 MessagePortWritable.asTransferable streams body data', async () => {
   deepStrictEqual(Buffer.concat(chunks), Buffer.from('Hello, World!'))
 })
 
-test('v2 MessagePortWritable.asTransferable streams body data to a worker', async () => {
+test('MessagePortWritable.asTransferable streams body data to a worker', async () => {
   const worker = new Worker(workerURL('stream-consumer.ts'))
   const { port, transferList } = MessagePortWritable.asTransferable(Readable.from(['Hello, Worker!']))
 
@@ -146,5 +146,8 @@ test('v2 MessagePortWritable.asTransferable streams body data to a worker', asyn
   const [{ chunks }] = (await once(worker, 'message')) as Array<{ chunks: Buffer[] }>
   await worker.terminate()
 
-  deepStrictEqual(chunks.map(chunk => Buffer.from(chunk)), [Buffer.from('Hello, Worker!')])
+  deepStrictEqual(
+    chunks.map(chunk => Buffer.from(chunk)),
+    [Buffer.from('Hello, Worker!')]
+  )
 })

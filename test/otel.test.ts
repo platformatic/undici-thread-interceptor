@@ -9,7 +9,7 @@ import { Agent, request } from 'undici'
 import { createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 import { createInterceptor } from '../src/index.ts'
 
-test('v2 undici OTel instrumentation creates client spans for thread-mode requests', async t => {
+test('undici OTel instrumentation creates client spans for thread-mode requests', async t => {
   const { memoryExporter, provider, instrumentation } = setupOtel(t)
   const { meshId, coordinatorThreadId } = await createMesh(t, 'otel-span')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'otel-span.local' })
@@ -31,7 +31,7 @@ test('v2 undici OTel instrumentation creates client spans for thread-mode reques
   ok(clientSpan.attributes['http.response.status_code'] || clientSpan.attributes['http.status_code'])
 })
 
-test('v2 undici OTel instrumentation injects trace context headers', async t => {
+test('undici OTel instrumentation injects trace context headers', async t => {
   propagation.setGlobalPropagator(new W3CTraceContextPropagator())
   setupOtel(t)
   const { meshId, coordinatorThreadId } = await createMesh(t, 'otel-trace')
@@ -56,7 +56,7 @@ test('v2 undici OTel instrumentation injects trace context headers', async t => 
   })
 })
 
-test('v2 undici OTel instrumentation records request errors', async t => {
+test('undici OTel instrumentation records request errors', async t => {
   const { memoryExporter, provider } = setupOtel(t)
   const { meshId, coordinatorThreadId } = await createMesh(t, 'otel-error')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'otel-error.local' })

@@ -8,8 +8,11 @@ import { Agent, request } from 'undici'
 import { createInterceptor, createServer } from '../src/index.ts'
 import { createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 
-test('v2 validates interceptor hook options', () => {
-  throwsHook(() => createInterceptor({ meshId: 'hooks-validation', onResponse: 'nope' as any }), 'Expected a function, got string')
+test('validates interceptor hook options', () => {
+  throwsHook(
+    () => createInterceptor({ meshId: 'hooks-validation', onResponse: 'nope' as any }),
+    'Expected a function, got string'
+  )
   throwsHook(
     () => createInterceptor({ meshId: 'hooks-validation', onRequest: [() => {}, 'nope'] as any }),
     'Expected a function, got string'
@@ -20,9 +23,15 @@ test('v2 validates interceptor hook options', () => {
   )
 })
 
-test('v2 validates server hook options', () => {
+test('validates server hook options', () => {
   throwsHook(
-    () => createServer({ meshId: 'hooks-validation', domain: 'validation.local', server: () => {}, onResponse: 'nope' as any }),
+    () =>
+      createServer({
+        meshId: 'hooks-validation',
+        domain: 'validation.local',
+        server: () => {},
+        onResponse: 'nope' as any
+      }),
     'Expected a function, got string'
   )
   throwsHook(
@@ -36,12 +45,18 @@ test('v2 validates server hook options', () => {
     'Expected a function, got string'
   )
   throwsHook(
-    () => createServer({ meshId: 'hooks-validation', domain: 'validation.local', server: () => {}, onError: async () => {} }),
+    () =>
+      createServer({
+        meshId: 'hooks-validation',
+        domain: 'validation.local',
+        server: () => {},
+        onError: async () => {}
+      }),
     'Async hooks are not supported'
   )
 })
 
-test('v2 rejects server domains that include a protocol', () => {
+test('rejects server domains that include a protocol', () => {
   throws(
     () => createServer({ meshId: 'domain-validation', domain: 'http:validation.local', server: () => {} }),
     /domain must not include a protocol/
@@ -74,7 +89,7 @@ async function waitForHookCount (worker: Worker & { hooks: string[] }, count: nu
   throw new Error(`worker did not collect ${count} hook messages`)
 }
 
-test('v2 interceptor onRequest hook', async t => {
+test('interceptor onRequest hook', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'hook-request')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'hook-request.local' })
   let seen: unknown
@@ -94,15 +109,18 @@ test('v2 interceptor onRequest hook', async t => {
 
   strictEqual(statusCode, 200)
   const { origin, path, method, headers } = seen as Record<string, unknown>
-  deepStrictEqual({ origin, path, method, headers }, {
-    origin: 'http://hook-request.local',
-    path: '/',
-    method: 'GET',
-    headers: { host: 'hook-request.local' }
-  })
+  deepStrictEqual(
+    { origin, path, method, headers },
+    {
+      origin: 'http://hook-request.local',
+      path: '/',
+      method: 'GET',
+      headers: { host: 'hook-request.local' }
+    }
+  )
 })
 
-test('v2 interceptor response hooks share context', async t => {
+test('interceptor response hooks share context', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'hook-response')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'hook-response.local' })
   const calls: string[] = []
@@ -124,14 +142,16 @@ test('v2 interceptor response hooks share context', async t => {
   await interceptor.ready
   await waitForMeshServers(interceptor, 'http:hook-response.local', 1)
 
-  const { statusCode, body } = await request('http://hook-response.local', { dispatcher: new Agent().compose(interceptor) })
+  const { statusCode, body } = await request('http://hook-response.local', {
+    dispatcher: new Agent().compose(interceptor)
+  })
   await body.text()
 
   strictEqual(statusCode, 200)
   deepStrictEqual(calls.map(String), ['200:propagated', 'end:200:propagated'])
 })
 
-test('v2 interceptor hook arrays run in order', async t => {
+test('interceptor hook arrays run in order', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'hook-arrays')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'hook-arrays.local' })
   const calls: string[] = []
@@ -157,20 +177,16 @@ test('v2 interceptor hook arrays run in order', async t => {
         return true
       }
     ],
-    onResponse: [
-      () => calls.push('response:first'),
-      () => calls.push('response:second')
-    ],
-    onResponseEnd: [
-      () => calls.push('end:first'),
-      () => calls.push('end:second')
-    ]
+    onResponse: [() => calls.push('response:first'), () => calls.push('response:second')],
+    onResponseEnd: [() => calls.push('end:first'), () => calls.push('end:second')]
   })
   t.after(() => interceptor.close())
   await interceptor.ready
   await waitForMeshServers(interceptor, 'http:hook-arrays.local', 1)
 
-  const { statusCode, body } = await request('http://hook-arrays.local', { dispatcher: new Agent().compose(interceptor) })
+  const { statusCode, body } = await request('http://hook-arrays.local', {
+    dispatcher: new Agent().compose(interceptor)
+  })
   await body.text()
 
   strictEqual(statusCode, 200)
@@ -186,9 +202,14 @@ test('v2 interceptor hook arrays run in order', async t => {
   ])
 })
 
-test('v2 allowTarget hook arrays short-circuit on false', async t => {
+test('allowTarget hook arrays short-circuit on false', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'allow-short-circuit')
-  await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'allow-short-circuit.local' })
+  await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'allow-short-circuit.local'
+  })
   const calls: string[] = []
   const interceptor = createInterceptor({
     meshId,
@@ -214,7 +235,7 @@ test('v2 allowTarget hook arrays short-circuit on false', async t => {
   deepStrictEqual(calls, ['first'])
 })
 
-test('v2 interceptor response hooks run for tcp targets', async t => {
+test('interceptor response hooks run for tcp targets', async t => {
   const app = Fastify()
   app.get('/', async () => ({ hello: 'tcp' }))
   await app.listen({ port: 0 })
@@ -253,7 +274,7 @@ test('v2 interceptor response hooks run for tcp targets', async t => {
   deepStrictEqual(calls, ['response:200', 'end:200:tcp'])
 })
 
-test('v2 interceptor error hooks run for tcp target failures', async t => {
+test('interceptor error hooks run for tcp target failures', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'tcp-error-hooks')
   const server = createServer({
     meshId,
@@ -282,7 +303,7 @@ test('v2 interceptor error hooks run for tcp target failures', async t => {
   strictEqual(seen instanceof Error, true)
 })
 
-test('v2 server onResponse hook is called once per response', async t => {
+test('server onResponse hook is called once per response', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'server-response-hook')
   const worker = await createWorkerServer(t, {
     meshId,
@@ -306,7 +327,7 @@ test('v2 server onResponse hook is called once per response', async t => {
   deepStrictEqual(worker.hooks, ['request:/', 'response:/'])
 })
 
-test('v2 server hook arrays run in order', async t => {
+test('server hook arrays run in order', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'server-hook-arrays')
   const worker = await createWorkerServer(t, {
     meshId,
@@ -334,7 +355,7 @@ test('v2 server hook arrays run in order', async t => {
   ])
 })
 
-test('v2 interceptor onError hook receives server app errors', async t => {
+test('interceptor onError hook receives server app errors', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'interceptor-error-hook')
   await createWorkerServer(t, {
     meshId,
@@ -355,14 +376,17 @@ test('v2 interceptor onError hook receives server app errors', async t => {
   await interceptor.ready
   await waitForMeshServers(interceptor, 'http:interceptor-error-hook.local', 1)
 
-  await rejects(request('http://interceptor-error-hook.local/error', { dispatcher: new Agent().compose(interceptor) }), {
-    message: 'kaboom'
-  })
+  await rejects(
+    request('http://interceptor-error-hook.local/error', { dispatcher: new Agent().compose(interceptor) }),
+    {
+      message: 'kaboom'
+    }
+  )
 
   strictEqual(seen?.message, 'kaboom')
 })
 
-test('v2 server onError hook arrays run in order', async t => {
+test('server onError hook arrays run in order', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'server-error-arrays')
   const worker = await createWorkerServer(t, {
     meshId,
@@ -382,7 +406,7 @@ test('v2 server onError hook arrays run in order', async t => {
   deepStrictEqual(worker.hooks, ['error:first:kaboom', 'error:second:kaboom'])
 })
 
-test('v2 interceptor onError hook arrays run in order', async t => {
+test('interceptor onError hook arrays run in order', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'error-hook-arrays')
   await createWorkerServer(t, {
     meshId,
