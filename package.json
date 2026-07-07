@@ -1,6 +1,6 @@
 {
   "name": "undici-thread-interceptor",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "description": "An Undici interceptor that routes requests over a worker thread",
   "author": "Matteo Collina <hello@matteocollina.com>",
   "homepage": "https://github.com/platformatic/undici-thread-interceptor",
