@@ -40,4 +40,4 @@ jobs:
       - run: npm publish --access public --tag ${{ inputs.prerelease == true && 'next' || 'one' }}
       - name: 'Create release notes'
         run: |
-          npx @matteo.collina/release-notes -a ${{ secrets.GITHUB_TOKEN }} -t v${{ inputs.version }} -r undici-thread-interceptor -o platformatic ${{ github.event.inputs.prerelease == 'true' && '-p' || '' }} -c ${{ github.ref }}
+          npx @matteo.collina/release-notes -a ${{ secrets.GITHUB_TOKEN }} -t v${{ inputs.version }} -r undici-thread-interceptor -o platformatic ${{ github.event.inputs.prerelease == 'true' && '-p' || '' }} -c ${{ github.ref }} --no-latest
