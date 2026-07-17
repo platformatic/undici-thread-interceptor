@@ -132,3 +132,5 @@ dist
 # IDE settings
 .vim
 .vscode
+
+.pi
