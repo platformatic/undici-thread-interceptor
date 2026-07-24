@@ -5,7 +5,7 @@ import { createServer as createHttpServer, type Server as HttpServer } from 'nod
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { MessageChannel, Worker, type MessagePort } from 'node:worker_threads'
-import { Agent, WebSocket } from 'undici'
+import { Agent, getGlobalDispatcher, setGlobalDispatcher, WebSocket } from 'undici'
 import { WebSocketServer } from 'ws'
 
 import {
@@ -364,6 +364,46 @@ test('same-thread mesh serves websockets', async t => {
   strictEqual(message.data, 'same thread')
 
   const closed = once(ws, 'close')
+  ws.close(1000)
+  await closed
+})
+
+test('routes the global WebSocket through the mesh via setGlobalDispatcher', async t => {
+  const meshId = `v2-ws-global-${Date.now()}`
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+
+  const httpServer = createHttpServer()
+  const wss = new WebSocketServer({ server: httpServer })
+  wss.on('connection', socket => {
+    socket.on('message', (data, isBinary) => socket.send(data as Buffer, { binary: isBinary }))
+  })
+  t.after(() => wss.close())
+
+  const server = createServer({ meshId, domain: 'global.local', server: httpServer })
+  await server.ready
+  t.after(() => server.close())
+
+  const interceptor = createInterceptor({ meshId, domain: '.local' })
+  await interceptor.ready
+  t.after(() => interceptor.close())
+  await waitForMeshServers(interceptor, 'http:global.local', 1)
+
+  // Node's bundled WebSocket resolves the dispatcher through the shared
+  // Symbol.for global registry, so the npm-undici setGlobalDispatcher is
+  // visible to it (bridged through Dispatcher1Wrapper on older Node).
+  const previousDispatcher = getGlobalDispatcher()
+  setGlobalDispatcher(new Agent().compose(interceptor) as any)
+  t.after(() => setGlobalDispatcher(previousDispatcher))
+
+  const ws = new globalThis.WebSocket('ws://global.local/')
+  await waitForOpen(ws as unknown as WebSocket)
+
+  ws.send('global client')
+  const [message] = await once(ws as any, 'message')
+  strictEqual(message.data, 'global client')
+
+  const closed = once(ws as any, 'close')
   ws.close(1000)
   await closed
 })

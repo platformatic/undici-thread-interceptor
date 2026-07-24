@@ -158,6 +158,14 @@ const ws = new WebSocket('ws://api.local/updates', { dispatcher: agent })
 
 The connection is tunneled between threads over a dedicated `MessagePort` as raw bytes: the server performs its real handshake, so subprotocols, ping/pong, close codes, and `permessage-deflate` behave exactly as over TCP. TCP targets upgrade over their real address. Routing, `allowTarget` hooks, and `connectTimeout` apply to upgrades the same way they apply to requests.
 
+Supported clients — anything that dispatches through undici:
+
+- undici's `WebSocket` with the `dispatcher` option, as above.
+- Node's global `WebSocket` via `setGlobalDispatcher(agent)` from undici — no per-connection options needed. (Passing `{ dispatcher }` to the global `WebSocket` also works on Node ≥ 24; on Node 22 the bundled undici predates the current handler API, so prefer `setGlobalDispatcher` or the undici import there.)
+- `dispatcher.upgrade()` for manual HTTP upgrades.
+
+The `ws` package is supported on the **server** side only. Its client speaks `node:http` directly and never consults undici dispatchers, so it cannot reach mesh domains.
+
 Targets advertise an `upgrade` capability in the mesh (`capabilities.upgrade`). Bare request handlers cannot accept upgrades and are skipped by upgrade selection; if no target can upgrade, dispatch fails with `NoAvailableTargetError`. To serve upgrades without an `http.Server`, pass an explicit handler:
 
 ```js
