@@ -11,7 +11,24 @@ export const channels = {
   serverResponseFinish: diagnosticsChannel.channel('http.server.response.finish'),
   meshUpdate: diagnosticsChannel.channel('undici-thread-interceptor:mesh:update'),
   peerConnect: diagnosticsChannel.channel('undici-thread-interceptor:peer:connect'),
-  peerDisconnect: diagnosticsChannel.channel('undici-thread-interceptor:peer:disconnect')
+  peerDisconnect: diagnosticsChannel.channel('undici-thread-interceptor:peer:disconnect'),
+  upgradeStart: diagnosticsChannel.channel('undici-thread-interceptor:upgrade:start'),
+  upgradeEstablished: diagnosticsChannel.channel('undici-thread-interceptor:upgrade:established'),
+  upgradeRejected: diagnosticsChannel.channel('undici-thread-interceptor:upgrade:rejected'),
+  upgradeClosed: diagnosticsChannel.channel('undici-thread-interceptor:upgrade:closed'),
+  serverUpgradeStart: diagnosticsChannel.channel('undici-thread-interceptor:server:upgrade:start'),
+  serverUpgradeReject: diagnosticsChannel.channel('undici-thread-interceptor:server:upgrade:reject'),
+  serverUpgradeClosed: diagnosticsChannel.channel('undici-thread-interceptor:server:upgrade:closed')
+}
+
+export interface UpgradeDiagnosticsPayload {
+  meshId: string
+  origin: string
+  interceptorId: string
+  serverId: string
+  method: string
+  path: string
+  statusCode?: number
 }
 
 export interface PeerDiagnosticsPayload {

@@ -4,7 +4,8 @@ import type { MessagePort } from 'node:worker_threads'
 import { MessageChannel, threadId } from 'node:worker_threads'
 
 import { channels } from './diagnostics.ts'
-import { MessagePortReadable, MessagePortWritable } from './message-port-streams.ts'
+import { buildFakeRequest, FakeSocket, type FakeIncomingMessage } from './fake-socket.ts'
+import { MessagePortDuplex, MessagePortReadable, MessagePortWritable } from './message-port-streams.ts'
 import {
   MAX_BODY,
   Message,
@@ -13,10 +14,19 @@ import {
   type PeerConnectMessage,
   type RequestMessage,
   type ResponseMessage,
-  type State
+  type State,
+  type UpgradeMessage
 } from './protocol.ts'
 import { createRequestQueue, type RequestQueue } from './request-queue.ts'
-import { createId, normalizeHooks, normalizeOrigin, runHooks, sendThreadMessage, type Hooks } from './utils.ts'
+import {
+  createId,
+  executeWithTimeout,
+  normalizeHooks,
+  normalizeOrigin,
+  runHooks,
+  sendThreadMessage,
+  type Hooks
+} from './utils.ts'
 
 export interface ServerOptions {
   meshId: string
@@ -27,6 +37,12 @@ export interface ServerOptions {
   metadata?: unknown
   coordinatorThreadId?: number
   bootstrapTimeout?: number
+  // Explicit HTTP upgrade handler. When omitted, upgrades are emitted on the
+  // registered server's 'upgrade' event (or its .server property for Fastify).
+  upgrade?: (req: FakeIncomingMessage, socket: FakeSocket, head: Buffer) => void
+  // How long close() waits for established upgraded connections to close on
+  // their own before destroying them. 0 destroys them immediately.
+  upgradeDrainTimeout?: number
   onRequest?: Hooks<(req: any) => void>
   onResponse?: Hooks<(req: any, res: any) => void>
   onError?: Hooks<(req: any, res: any, error: Error) => void>
@@ -58,6 +74,8 @@ export class Server {
   #peers: Map<MessagePort, string>
   #queue: RequestQueue<QueuedRequest>
   #activeRequests: Set<Promise<void>>
+  #activeSockets: Set<FakeSocket>
+  #onSocketsEmpty: (() => void) | null
   #closed: boolean
   #draining: boolean
   #boundWorkerMessageListener: (value: unknown) => void
@@ -82,6 +100,8 @@ export class Server {
     this.#peers = new Map()
     this.#queue = createRequestQueue(this.serverId, this.#processQueuedRequest.bind(this))
     this.#activeRequests = new Set()
+    this.#activeSockets = new Set()
+    this.#onSocketsEmpty = null
     this.#closed = false
     this.#draining = false
     this.#boundWorkerMessageListener = this.#onWorkerMessage.bind(this)
@@ -107,7 +127,8 @@ export class Server {
         origin: this.#origin,
         state: this.#state,
         mode: this.#getMode(),
-        address: this.#getAddress()
+        address: this.#getAddress(),
+        capabilities: this.#getCapabilities()
       }
     }
 
@@ -146,6 +167,7 @@ export class Server {
 
     await this.#queue.drained()
     await Promise.allSettled(this.#activeRequests)
+    await this.#drainSockets()
     this.#draining = false
 
     process.off('workerMessage', this.#boundWorkerMessageListener)
@@ -211,8 +233,40 @@ export class Server {
       state: this.#state,
       metadata: this.#metadata,
       mode: this.#getMode(),
-      address: this.#getAddress()
+      address: this.#getAddress(),
+      capabilities: this.#getCapabilities()
     })
+  }
+
+  #getCapabilities (): { upgrade: boolean } {
+    // "Can possibly upgrade": upgrade listeners may attach after
+    // registration, so anything with an 'upgrade' event surface counts.
+    // Requests to a capable target with no listener still get a 501.
+    const target = this.#server
+    const upgrade =
+      this.#getMode() === 'tcp' ||
+      typeof this.#options.upgrade === 'function' ||
+      typeof target?.emit === 'function' ||
+      typeof target?.server?.emit === 'function'
+
+    return { upgrade }
+  }
+
+  async #drainSockets (): Promise<void> {
+    const timeout = this.#options.upgradeDrainTimeout ?? 30_000
+
+    if (this.#activeSockets.size > 0 && timeout > 0) {
+      const { promise, resolve } = Promise.withResolvers<void>()
+      this.#onSocketsEmpty = resolve
+      await executeWithTimeout(promise, timeout)
+      this.#onSocketsEmpty = null
+    }
+
+    for (const socket of this.#activeSockets) {
+      socket.destroy(new Error('server closed'))
+    }
+
+    this.#activeSockets.clear()
   }
 
   #getMode (): MeshServer['mode'] {
@@ -262,11 +316,122 @@ export class Server {
       return
     }
 
+    if (message.type === Message.UPGRADE) {
+      // Upgrades bypass the request queue: it exists for fairness of
+      // short-lived work, and a long-lived connection would distort it.
+      this.#handleUpgrade(value as UpgradeMessage)
+      return
+    }
+
     if (message.type !== Message.REQUEST) {
       return
     }
 
     this.#queue.push({ port, message: value as RequestMessage, rejected: this.#closed })
+  }
+
+  #handleUpgrade (message: UpgradeMessage): void {
+    if (this.#closed || this.#state !== 'available' || !this.#server || this.#getMode() === 'tcp') {
+      this.#rejectUpgradeInBand(message, 503, 'Service Unavailable')
+      return
+    }
+
+    const emitter = this.#resolveUpgradeEmitter()
+
+    if (!emitter) {
+      this.#rejectUpgradeInBand(message, 501, 'Not Implemented')
+      return
+    }
+
+    const socket = new FakeSocket({ port: message.socketPort })
+    // Guard against 'error' with no listeners attached yet, which would
+    // otherwise crash the thread; upgrade consumers add their own listeners.
+    socket.on('error', () => {})
+    this.#activeSockets.add(socket)
+    socket.on('close', () => {
+      this.#activeSockets.delete(socket)
+
+      if (this.#activeSockets.size === 0) {
+        this.#onSocketsEmpty?.()
+      }
+
+      if (channels.serverUpgradeClosed.hasSubscribers) {
+        channels.serverUpgradeClosed.publish(this.#upgradeDiagnostics(message))
+      }
+    })
+
+    const headers: Record<string, string | string[]> = {
+      connection: 'Upgrade',
+      upgrade: message.protocol
+    }
+
+    for (const [name, value] of Object.entries(message.headers)) {
+      if (value !== undefined && value !== null) {
+        headers[name.toLowerCase()] = Array.isArray(value) ? value : String(value)
+      }
+    }
+
+    const req = buildFakeRequest(message.method, message.path, headers, socket)
+    const head = message.head ? Buffer.from(message.head.buffer, message.head.byteOffset, message.head.byteLength) : Buffer.alloc(0)
+
+    if (channels.serverUpgradeStart.hasSubscribers) {
+      channels.serverUpgradeStart.publish({ ...this.#upgradeDiagnostics(message), request: req, server: this.#server })
+    }
+
+    try {
+      runHooks(this.#hooks.onRequest, req)
+      emitter(req, socket, head)
+    } catch (error) {
+      runHooks(this.#hooks.onError, req, null, error as Error)
+      socket.destroy(error as Error)
+    }
+  }
+
+  #upgradeDiagnostics (message: UpgradeMessage): Record<string, unknown> {
+    return {
+      meshId: this.#options.meshId,
+      origin: this.#origin,
+      interceptorId: message.interceptorId,
+      serverId: this.serverId,
+      method: message.method,
+      path: message.path
+    }
+  }
+
+  #resolveUpgradeEmitter (): ((req: FakeIncomingMessage, socket: FakeSocket, head: Buffer) => void) | null {
+    if (this.#options.upgrade) {
+      return this.#options.upgrade
+    }
+
+    const target = this.#server
+
+    if (typeof target?.emit === 'function' && typeof target?.listenerCount === 'function' && target.listenerCount('upgrade') > 0) {
+      return (req, socket, head) => target.emit('upgrade', req, socket, head)
+    }
+
+    // Fastify exposes its http.Server (where @fastify/websocket listens) as .server.
+    const inner = target?.server
+
+    if (typeof inner?.emit === 'function' && typeof inner?.listenerCount === 'function' && inner.listenerCount('upgrade') > 0) {
+      return (req, socket, head) => inner.emit('upgrade', req, socket, head)
+    }
+
+    return null
+  }
+
+  #rejectUpgradeInBand (message: UpgradeMessage, statusCode: number, statusMessage: string): void {
+    if (channels.serverUpgradeReject.hasSubscribers) {
+      channels.serverUpgradeReject.publish({ ...this.#upgradeDiagnostics(message), statusCode })
+    }
+
+    // The response travels through the socket port as raw HTTP bytes, the
+    // same way a real server would answer before hanging up.
+    const socket = new MessagePortDuplex({ port: message.socketPort })
+    socket.on('error', () => {})
+    socket.resume()
+    // Hang up once the rejection has been flushed, like a real server would.
+    socket.once('finish', () => socket.destroy())
+    socket.end(`HTTP/1.1 ${statusCode} ${statusMessage}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`)
   }
 
   #processQueuedRequest ({ port, message, rejected }: QueuedRequest): void {
@@ -349,6 +514,11 @@ export class Server {
 
         if (typeof this.#server?.inject === 'function') {
           this.#server.inject(req, onInject)
+        } else if (typeof this.#server !== 'function' && typeof this.#server?.emit === 'function') {
+          // http.Server-like targets: replay the request through their
+          // 'request' listeners, which light-my-request cannot do directly.
+          const target = this.#server
+          inject((request: any, response: any) => target.emit('request', request, response), req as any, onInject)
         } else {
           inject(this.#server, req as any, onInject)
         }

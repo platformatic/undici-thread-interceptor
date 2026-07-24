@@ -134,6 +134,53 @@ server.ready.catch(error => {
 })
 ```
 
+## WebSockets
+
+Mesh targets can serve WebSocket connections. Client code is unmodified: use undici's `WebSocket` with the composed dispatcher and the mesh domain, and register a Node `http.Server` (or a Fastify instance using `@fastify/websocket`) so the mesh can emit its `'upgrade'` event:
+
+```js
+// Worker thread
+import { createServer } from 'node:http'
+import { WebSocketServer } from 'ws'
+import { createServer as createMeshServer } from 'undici-thread-interceptor'
+
+const httpServer = createServer(app)
+const wss = new WebSocketServer({ server: httpServer })
+wss.on('connection', socket => socket.on('message', data => socket.send(data)))
+
+createMeshServer({ meshId: 'app', domain: 'api.local', server: httpServer })
+
+// Client thread
+import { WebSocket } from 'undici'
+
+const ws = new WebSocket('ws://api.local/updates', { dispatcher: agent })
+```
+
+The connection is tunneled between threads over a dedicated `MessagePort` as raw bytes: the server performs its real handshake, so subprotocols, ping/pong, close codes, and `permessage-deflate` behave exactly as over TCP. TCP targets upgrade over their real address. Routing, `allowTarget` hooks, and `connectTimeout` apply to upgrades the same way they apply to requests.
+
+Supported clients — anything that dispatches through undici:
+
+- undici's `WebSocket` with the `dispatcher` option, as above.
+- Node's global `WebSocket` via `setGlobalDispatcher(agent)` from undici — no per-connection options needed. (Passing `{ dispatcher }` to the global `WebSocket` also works on Node ≥ 24; on Node 22 the bundled undici predates the current handler API, so prefer `setGlobalDispatcher` or the undici import there.)
+- `dispatcher.upgrade()` for manual HTTP upgrades.
+
+The `ws` package is supported on the **server** side only. Its client speaks `node:http` directly and never consults undici dispatchers, so it cannot reach mesh domains.
+
+Targets advertise an `upgrade` capability in the mesh (`capabilities.upgrade`). Bare request handlers cannot accept upgrades and are skipped by upgrade selection; if no target can upgrade, dispatch fails with `NoAvailableTargetError`. To serve upgrades without an `http.Server`, pass an explicit handler:
+
+```js
+createMeshServer({
+  meshId: 'app',
+  domain: 'api.local',
+  server: handler,
+  upgrade (req, socket, head) {
+    wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+  }
+})
+```
+
+`server.close()` drains established connections: it waits up to `upgradeDrainTimeout` milliseconds (default `30000`) for them to close on their own, then destroys the remainder. Use `0` to destroy them immediately. Paused servers keep established connections but reject new upgrades. `CONNECT` requests to mesh targets are rejected.
+
 ## Domains
 
 Server domains must not include a protocol. Use `api.local`, not `http:api.local` or `http://api.local`.
@@ -298,13 +345,15 @@ interface ServerOptions {
   metadata?: unknown
   coordinatorThreadId?: number
   bootstrapTimeout?: number
+  upgrade?: (req, socket, head) => void
+  upgradeDrainTimeout?: number
   onRequest?: Hook | Hook[]
   onResponse?: Hook | Hook[]
   onError?: Hook | Hook[]
 }
 ```
 
-`serverId` defaults to a `crypto.randomUUID()` value. `coordinatorThreadId` defaults to `0`. `server` can be a Fastify instance, an Express/Koa-style handler accepted by `light-my-request`, or a TCP target address string.
+`serverId` defaults to a `crypto.randomUUID()` value. `coordinatorThreadId` defaults to `0`. `server` can be a Fastify instance, a Node `http.Server`, an Express/Koa-style handler accepted by `light-my-request`, or a TCP target address string. `upgrade` overrides upgrade delivery; otherwise upgrades are emitted on the registered server's `'upgrade'` event (or its `.server` property for Fastify). `upgradeDrainTimeout` defaults to `30000`.
 
 ### `createInterceptor(options)`
 
@@ -354,6 +403,19 @@ Mesh diagnostics:
 - `undici-thread-interceptor:mesh:update`
 - `undici-thread-interceptor:peer:connect`
 - `undici-thread-interceptor:peer:disconnect`
+
+WebSocket upgrade diagnostics (interceptor side):
+
+- `undici-thread-interceptor:upgrade:start`
+- `undici-thread-interceptor:upgrade:established`
+- `undici-thread-interceptor:upgrade:rejected`
+- `undici-thread-interceptor:upgrade:closed`
+
+WebSocket upgrade diagnostics (server side):
+
+- `undici-thread-interceptor:server:upgrade:start`
+- `undici-thread-interceptor:server:upgrade:reject`
+- `undici-thread-interceptor:server:upgrade:closed`
 
 TCP targets are dispatched through Undici directly and do not emit synthetic thread-mode Undici request diagnostics.
 

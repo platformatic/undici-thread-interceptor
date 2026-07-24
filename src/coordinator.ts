@@ -180,7 +180,8 @@ export class Coordinator {
         origin: message.server?.origin,
         state: message.server?.state,
         mode: message.server?.mode,
-        address: message.server?.address
+        address: message.server?.address,
+        capabilities: message.server?.capabilities
       })
     } else {
       this.#upsertInterceptor(member, message.metadata)
@@ -255,7 +256,8 @@ export class Coordinator {
       threadId: member.threadId,
       origin,
       state: serverState,
-      metadata: message.metadata ?? previous?.metadata
+      metadata: message.metadata ?? previous?.metadata,
+      capabilities: (message.capabilities ?? previous?.capabilities) as MeshServer['capabilities']
     }
 
     const server: MeshServer =
