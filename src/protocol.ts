@@ -17,6 +17,7 @@ export const Message = {
   PEER_DISCONNECT: 'undici-thread-interceptor.peer.disconnect',
   REQUEST: 'undici-thread-interceptor.request',
   RESPONSE: 'undici-thread-interceptor.response',
+  UPGRADE: 'undici-thread-interceptor.upgrade',
   ERROR: 'undici-thread-interceptor.error'
 } as const
 
@@ -116,6 +117,27 @@ export interface ResponseMessage {
   headers?: Record<string, string | string[] | number | undefined>
   body?: Buffer | Uint8Array | string
   bodyPort?: MessagePort
+}
+
+export interface UpgradeMessage {
+  type: typeof Message.UPGRADE
+  id: string
+  meshId: string
+  interceptorId: string
+  origin: string
+  path: string
+  method: string
+  // Value of the upgrade dispatch option, e.g. 'websocket'. Restored as the
+  // upgrade request header on the server side, since undici only adds the
+  // connection/upgrade headers at wire-write time.
+  protocol: string
+  headers: Record<string, string | string[] | number | undefined>
+  // Bytes received after the request head, per the http.Server 'upgrade'
+  // event contract. Always empty for WebSocket clients.
+  head?: Uint8Array
+  // Transferred port carrying the connection's raw bytes in both directions.
+  // The handshake response travels in-band through this port as HTTP bytes.
+  socketPort: MessagePort
 }
 
 export interface ErrorMessage {

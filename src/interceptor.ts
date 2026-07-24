@@ -13,7 +13,8 @@ import {
   type PeerDiagnosticsPayload
 } from './diagnostics.ts'
 import { ConnectTimeoutError, NoAvailableTargetError } from './errors.ts'
-import { MessagePortReadable, MessagePortWritable } from './message-port-streams.ts'
+import { HttpResponseHeadParser, type ParsedResponseHead } from './http-head-parser.ts'
+import { MessagePortDuplex, MessagePortReadable, MessagePortWritable, toBufferChunk } from './message-port-streams.ts'
 import {
   Message,
   type CoordinatorConnectMessage,
@@ -22,7 +23,8 @@ import {
   type MeshServer,
   type PeerConnectMessage,
   type RequestMessage,
-  type ResponseMessage
+  type ResponseMessage,
+  type UpgradeMessage
 } from './protocol.ts'
 import {
   createId,
@@ -86,8 +88,21 @@ interface PendingRequest {
 interface Peer {
   port: MessagePort
   pending: Map<string, PendingRequest>
+  tunnels: Set<MessagePortDuplex>
   closed: boolean
   diagnostics: PeerDiagnosticsPayload
+}
+
+interface UpgradeController {
+  aborted: boolean
+  paused: boolean
+  reason: Error | null
+  // Undici's fetch layer builds the response HeadersList exclusively from
+  // controller.rawHeaders, so the parsed head must be exposed here.
+  rawHeaders: Buffer[] | null
+  abort: (reason: Error) => void
+  pause: () => void
+  resume: () => void
 }
 
 class HookHandler {
@@ -132,6 +147,11 @@ class HookHandler {
   onResponseError (controller: any, error: Error): void {
     runHooks(this.#hooks.onError, this.#request, null, this.#context, error)
     this.#handler.onResponseError?.(controller, error)
+  }
+
+  onRequestUpgrade (controller: any, statusCode: number, headers: any, socket: any): void {
+    runHooks(this.#hooks.onResponse, this.#request, { statusCode, headers }, this.#context)
+    this.#handler.onRequestUpgrade?.(controller, statusCode, headers, socket)
   }
 }
 
@@ -265,6 +285,10 @@ export class Interceptor {
       return dispatch(opts, handler)
     }
 
+    if (opts.method === 'CONNECT') {
+      throw new Error('CONNECT is not supported for mesh targets')
+    }
+
     const context: Record<PropertyKey, unknown> = {}
     const request = {
       ...opts,
@@ -282,6 +306,16 @@ export class Interceptor {
         { ...request, origin: server.address } as DispatchOptions,
         new HookHandler(handler, this.#hooks, request, context)
       )
+    }
+
+    if (opts.upgrade) {
+      this.#dispatchUpgradeViaMessagePort(server, url, request, context, handler).catch(error => {
+        this.#publishRequestError(request, context, error as Error)
+        runHooks(this.#hooks.onError, request, null, context, error as Error)
+        handler.onResponseError?.(null as any, error as Error)
+      })
+
+      return true
     }
 
     if (channels.requestCreate.hasSubscribers) {
@@ -422,6 +456,223 @@ export class Interceptor {
     }
   }
 
+  async #dispatchUpgradeViaMessagePort (
+    server: Extract<MeshServer, { mode: 'thread' }>,
+    url: URL,
+    request: DispatchOptions,
+    context: Record<PropertyKey, unknown>,
+    handler: DispatchHandler
+  ): Promise<void> {
+    const peer = await this.#ensurePeerMessagePort(server)
+    const id = this.#requestId()
+    const channel = new MessageChannel()
+    const { promise, resolve, reject } = Promise.withResolvers<void>()
+
+    const controller: UpgradeController = {
+      aborted: false,
+      paused: false,
+      reason: null,
+      rawHeaders: null,
+      abort (reason: Error) {
+        this.aborted = true
+        this.reason = reason
+      },
+      pause () {
+        this.paused = true
+      },
+      resume () {
+        this.paused = false
+      }
+    }
+
+    const parser = new HttpResponseHeadParser()
+    let head: ParsedResponseHead | null = null
+    let replaying = false
+    let settled = false
+    let responseTimeout: ReturnType<typeof setTimeout> | null = null
+
+    const finish = (error?: Error): void => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      peer.pending.delete(id)
+
+      if (responseTimeout !== null) {
+        clearTimeout(responseTimeout)
+      }
+
+      if (error) {
+        channel.port1.close()
+        reject(error)
+      } else {
+        resolve()
+      }
+    }
+
+    const endReplay = (): void => {
+      try {
+        handler.onResponseEnd?.(controller as any, {})
+      } catch (error) {
+        finish(error as Error)
+        return
+      }
+
+      runHooks(this.#hooks.onResponseEnd, request, { statusCode: head?.statusCode }, context)
+      channel.port1.close()
+      finish()
+    }
+
+    const onPortClose = (): void => {
+      if (settled) {
+        return
+      }
+
+      if (replaying) {
+        // Connection-close terminated response body.
+        endReplay()
+      } else {
+        finish(new Error('connection closed before response head'))
+      }
+    }
+
+    const establish = (parsedHead: ParsedResponseHead, remainingChunks: unknown[]): void => {
+      channel.port1.off('message', onPortMessage)
+      channel.port1.off('close', onPortClose)
+
+      const socket = new MessagePortDuplex({ port: channel.port1 })
+
+      if (parsedHead.rest.length > 0) {
+        socket.push(parsedHead.rest)
+      }
+
+      for (const chunk of remainingChunks) {
+        socket.push(toBufferChunk(chunk))
+      }
+
+      peer.tunnels.add(socket)
+      socket.on('close', () => peer.tunnels.delete(socket))
+
+      controller.rawHeaders = parsedHead.rawHeaders
+      runHooks(this.#hooks.onResponse, request, parsedHead, context)
+      handler.onRequestUpgrade?.(controller as any, parsedHead.statusCode, parsedHead.headers as any, socket)
+      finish()
+    }
+
+    const onPortMessage = (control: { chunks?: unknown[]; fin?: boolean; err?: Error }): void => {
+      if (settled) {
+        return
+      }
+
+      try {
+        if (control.err) {
+          finish(control.err)
+          return
+        }
+
+        if (control.fin) {
+          if (replaying) {
+            endReplay()
+          } else {
+            finish(new Error('connection closed before response head'))
+          }
+          return
+        }
+
+        if (!Array.isArray(control.chunks)) {
+          return
+        }
+
+        for (let i = 0; i < control.chunks.length; i++) {
+          const raw = toBufferChunk(control.chunks[i])
+          const buffer = typeof raw === 'string' ? Buffer.from(raw) : raw
+
+          if (replaying) {
+            handler.onResponseData?.(controller as any, buffer)
+            continue
+          }
+
+          head = parser.feed(buffer)
+
+          if (!head) {
+            continue
+          }
+
+          if (responseTimeout !== null) {
+            clearTimeout(responseTimeout)
+            responseTimeout = null
+          }
+
+          peer.pending.delete(id)
+
+          if (head.statusCode === 101) {
+            establish(head, control.chunks.slice(i + 1))
+            return
+          }
+
+          // Non-101 handshake rejection: replay it as a regular HTTP
+          // response so it surfaces exactly like a network response would.
+          replaying = true
+          runHooks(this.#hooks.onResponse, request, head, context)
+          handler.onResponseStart?.(controller as any, head.statusCode, head.headers as any, head.statusMessage)
+
+          if (head.rest.length > 0) {
+            handler.onResponseData?.(controller as any, Buffer.from(head.rest))
+          }
+        }
+
+        // Grant write credit so the server keeps sending head or body bytes.
+        channel.port1.postMessage({ more: true })
+      } catch (error) {
+        finish(error as Error)
+      }
+    }
+
+    channel.port1.on('message', onPortMessage)
+    channel.port1.on('close', onPortClose)
+
+    peer.pending.set(id, {
+      request,
+      handler,
+      context,
+      controller,
+      resolve: () => finish(),
+      reject: (error: Error) => finish(error),
+      onMessage: AsyncResource.bind((value: unknown) => {
+        const message = value as { type?: string }
+
+        if (message.type === Message.ERROR) {
+          finish((value as ErrorMessage).error)
+        }
+      })
+    } as unknown as PendingRequest)
+
+    if (this.#connectTimeout > 0) {
+      responseTimeout = setTimeout(() => {
+        finish(new ConnectTimeoutError(`Timeout while waiting for upgrade from ${server.serverId}.`))
+      }, this.#connectTimeout)
+      responseTimeout.unref()
+    }
+
+    const message: UpgradeMessage = {
+      type: Message.UPGRADE,
+      id,
+      meshId: this.#options.meshId,
+      interceptorId: this.interceptorId,
+      origin: server.origin,
+      path: url.pathname + url.search,
+      method: request.method,
+      protocol: typeof request.upgrade === 'string' ? request.upgrade : 'websocket',
+      headers: request.headers as Record<string, string | string[] | number | undefined>,
+      socketPort: channel.port2
+    }
+
+    handler.onRequestStart?.(controller as any, {})
+    peer.port.postMessage(message, [channel.port2])
+    await promise
+  }
+
   async #ensurePeerMessagePort (server: Extract<MeshServer, { mode: 'thread' }>): Promise<Peer> {
     const key = `${server.serverId}:${server.origin}`
     const existing = this.#peers.get(key)
@@ -460,7 +711,7 @@ export class Interceptor {
       threadId
     }
 
-    const peer: Peer = { port: channel.port1, pending: new Map(), closed: false, diagnostics }
+    const peer: Peer = { port: channel.port1, pending: new Map(), tunnels: new Set(), closed: false, diagnostics }
     this.#peers.set(key, peer)
 
     channel.port1.on('message', value => this.#onPeerMessage(peer, value))
@@ -476,6 +727,12 @@ export class Interceptor {
       }
 
       peer.pending.clear()
+
+      for (const tunnel of peer.tunnels) {
+        tunnel.destroy(new Error('message port closed'))
+      }
+
+      peer.tunnels.clear()
     })
     channel.port1.start()
 

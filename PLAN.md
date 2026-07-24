@@ -375,6 +375,26 @@ variant. Both `ws` and `@fastify/websocket` become dev dependencies.
 2. **Phase 1:** `UPGRADE` protocol message, interceptor upgrade path,
    server upgrade-target resolution, TCP branch, error paths, bulk of the
    tests.
+   **Status: DONE.** Landed: `UPGRADE` message with in-band handshake
+   response over a transferred `socketPort` (`ERROR` retained for
+   pre-handshake failures); interceptor upgrade dispatch sharing routing /
+   `allowTarget` / `connectTimeout` with the HTTP path, non-101 replay as a
+   regular response, per-peer tunnel tracking destroyed on close;
+   `HookHandler.onRequestUpgrade` forwarding for TCP targets; server-side
+   `src/fake-socket.ts` (fake socket + fake `IncomingMessage`),
+   upgrade-emitter resolution (explicit `ServerOptions.upgrade` →
+   `'upgrade'` listeners on the server → Fastify's `.server`), in-band
+   `503`/`501` rejections (open question 4 resolved: in-band), and
+   active-socket destruction on `close()` (immediate — grace period is
+   phase 2). Upgrades bypass the request queue. `CONNECT` to mesh targets
+   is rejected. Tests in `test/websocket.test.ts` cover echo, round-robin,
+   rejection replay, paused targets, absent-domain delegation, TCP
+   targets, 501/503, `connectTimeout`, same-thread mesh, hooks +
+   `allowTarget`, server/interceptor close, and concurrent connections.
+   Phase 1 note: a rejection duplex must `destroy()` itself after
+   `'finish'` (like ws's `abortHandshake`) — with `allowHalfOpen: false`,
+   finishing the writable alone leaves the port open and leaks the event
+   loop handle.
 3. **Phase 2:** lifecycle (drain/pause/force), capability flag + selection
    behavior, diagnostics, docs (README + MIGRATION note).
 
