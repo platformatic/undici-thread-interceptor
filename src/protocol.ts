@@ -29,12 +29,17 @@ export type Mode = 'thread' | 'tcp'
 
 export type Role = 'interceptor' | 'server'
 
+export interface ServerCapabilities {
+  upgrade: boolean
+}
+
 interface BaseServer {
   serverId: string
   threadId: number
   origin: string
   state: State
   metadata?: unknown
+  capabilities?: ServerCapabilities
 }
 
 export interface ThreadServer extends BaseServer {
@@ -81,6 +86,7 @@ export interface CoordinatorConnectMessage {
     state: State
     mode: Mode
     address?: string
+    capabilities?: ServerCapabilities
   }
   threadId: number
   port: MessagePort

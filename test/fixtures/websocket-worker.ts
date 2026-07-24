@@ -50,7 +50,8 @@ const server = createServer({
   domain: workerData.domain,
   server: target,
   paused: workerData.paused,
-  upgrade
+  upgrade,
+  upgradeDrainTimeout: workerData.upgradeDrainTimeout
 })
 
 await server.ready

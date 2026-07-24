@@ -1,7 +1,9 @@
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert'
+import diagnosticsChannel from 'node:diagnostics_channel'
 import { once } from 'node:events'
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
 import { test } from 'node:test'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { MessageChannel, Worker, type MessagePort } from 'node:worker_threads'
 import { Agent, WebSocket } from 'undici'
 import { WebSocketServer } from 'ws'
@@ -11,7 +13,8 @@ import {
   createCoordinator,
   createInterceptor,
   createServer,
-  NoAvailableTargetError
+  NoAvailableTargetError,
+  type InterceptorFunction
 } from '../src/index.ts'
 import { Message } from '../src/protocol.ts'
 import { createAgent, createMesh, waitForMeshServers, workerURL } from './helper.ts'
@@ -25,12 +28,37 @@ async function createWebSocketWorker (
     domain: string
     kind?: 'echo' | 'path-restricted' | 'handler-only' | 'blackhole'
     paused?: boolean
+    upgradeDrainTimeout?: number
   }
 ): Promise<Worker> {
   const worker = new Worker(workerURL('websocket-worker.ts'), { workerData: options })
   t.after(() => worker.terminate())
   await once(worker, 'message')
   return worker
+}
+
+function waitForClosed (worker: Worker): Promise<void> {
+  return new Promise(resolve => {
+    worker.on('message', (message: { type?: string }) => {
+      if (message.type === 'closed') {
+        resolve()
+      }
+    })
+  })
+}
+
+async function waitForUpgradeCapability (
+  interceptor: InterceptorFunction,
+  serverId: string,
+  value: boolean
+): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if (interceptor.getMesh()?.servers[serverId]?.capabilities?.upgrade === value) {
+      return
+    }
+    await sleep(20)
+  }
+  throw new Error(`server ${serverId} did not reach upgrade capability ${value}`)
 }
 
 function waitForOpen (ws: WebSocket): Promise<void> {
@@ -214,8 +242,8 @@ test('routes websocket connections to TCP targets', async t => {
   await closed
 })
 
-test('websocket upgrade to a target that cannot upgrade fails cleanly', async t => {
-  const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-501')
+test('websocket upgrade fails with NoAvailableTargetError when no target can upgrade', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-no-capability')
   await createWebSocketWorker(t, {
     meshId,
     coordinatorThreadId,
@@ -226,13 +254,51 @@ test('websocket upgrade to a target that cannot upgrade fails cleanly', async t 
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
   await waitForMeshServers(interceptor, 'http:myserver.local', 1)
 
-  const ws = new WebSocket('ws://myserver.local/', { dispatcher: agent })
-  const error = await waitForFailure(ws)
-  ok(error instanceof Error)
+  // The bare-handler target advertises capabilities.upgrade: false, so
+  // selection skips it entirely instead of tunneling into a 501.
+  strictEqual(interceptor.getMesh()?.servers['ws-1'].capabilities?.upgrade, false)
 
-  await rejects(agent.upgrade({ origin: 'http://myserver.local', path: '/', protocol: 'websocket' }), {
-    message: 'bad upgrade'
+  await rejects(
+    agent.upgrade({ origin: 'http://myserver.local', path: '/', protocol: 'websocket' }),
+    NoAvailableTargetError
+  )
+
+  // Regular HTTP requests still reach the target.
+  const response = await agent.request({ origin: 'http://myserver.local', path: '/', method: 'GET' })
+  strictEqual(response.statusCode, 200)
+  await response.body.text()
+})
+
+test('upgrades skip non-capable targets while HTTP requests use all of them', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-mixed')
+  await createWebSocketWorker(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'ws-plain',
+    domain: 'myserver.local',
+    kind: 'handler-only'
   })
+  await createWebSocketWorker(t, { meshId, coordinatorThreadId, serverId: 'ws-echo', domain: 'myserver.local' })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:myserver.local', 2)
+
+  for (let i = 0; i < 4; i++) {
+    const ws = new WebSocket('ws://myserver.local/', { dispatcher: agent })
+    await waitForOpen(ws)
+    ws.send('whoami')
+    const [message] = await once(ws, 'message')
+    strictEqual(JSON.parse(message.data).serverId, 'ws-echo')
+    const closed = once(ws, 'close')
+    ws.close(1000)
+    await closed
+  }
+
+  const bodies = new Set<string>()
+  for (let i = 0; i < 4; i++) {
+    const response = await agent.request({ origin: 'http://myserver.local', path: '/', method: 'GET' })
+    bodies.add(await response.body.text())
+  }
+  strictEqual(bodies.size, 2)
 })
 
 test('websocket upgrade honors connectTimeout', async t => {
@@ -342,27 +408,6 @@ test('interceptor hooks observe websocket upgrades and allowTarget steers them',
   deepStrictEqual(responses, [101, 101])
 })
 
-test('server close destroys established websockets', async t => {
-  const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-server-close')
-  const worker = await createWebSocketWorker(t, {
-    meshId,
-    coordinatorThreadId,
-    serverId: 'ws-1',
-    domain: 'myserver.local'
-  })
-  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
-  await waitForMeshServers(interceptor, 'http:myserver.local', 1)
-
-  const ws = new WebSocket('ws://myserver.local/', { dispatcher: agent })
-  ws.addEventListener('error', () => {})
-  await waitForOpen(ws)
-
-  const closed = once(ws, 'close')
-  worker.postMessage('close')
-  const [closeEvent] = await closed
-  strictEqual(closeEvent.code, 1006)
-})
-
 test('interceptor close destroys established websockets', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-interceptor-close')
   await createWebSocketWorker(t, { meshId, coordinatorThreadId, serverId: 'ws-1', domain: 'myserver.local' })
@@ -418,6 +463,11 @@ function postUpgrade (port: MessagePort, meshId: string, socketPort: MessagePort
 }
 
 test('paused servers reject upgrades in-band with 503', async t => {
+  const rejections: any[] = []
+  const listener = (payload: unknown): number => rejections.push(payload)
+  diagnosticsChannel.subscribe('undici-thread-interceptor:server:upgrade:reject', listener)
+  t.after(() => diagnosticsChannel.unsubscribe('undici-thread-interceptor:server:upgrade:reject', listener))
+
   const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-inband-503')
   const server = createServer({
     meshId,
@@ -438,6 +488,9 @@ test('paused servers reject upgrades in-band with 503', async t => {
   postUpgrade(peerChannel.port1, meshId, socketChannel.port2)
 
   ok((await response).toString().startsWith('HTTP/1.1 503 Service Unavailable'))
+  strictEqual(rejections.length, 1)
+  strictEqual(rejections[0].statusCode, 503)
+  strictEqual(rejections[0].serverId, server.serverId)
 })
 
 test('servers without an upgrade target reject upgrades in-band with 501', async t => {
@@ -460,6 +513,204 @@ test('servers without an upgrade target reject upgrades in-band with 501', async
   postUpgrade(peerChannel.port1, meshId, socketChannel.port2)
 
   ok((await response).toString().startsWith('HTTP/1.1 501 Not Implemented'))
+})
+
+test('server close waits for websockets to close on their own', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-drain-wait')
+  const worker = await createWebSocketWorker(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'ws-1',
+    domain: 'myserver.local'
+  })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:myserver.local', 1)
+
+  const ws = new WebSocket('ws://myserver.local/', { dispatcher: agent })
+  ws.addEventListener('error', () => {})
+  await waitForOpen(ws)
+
+  const workerClosed = waitForClosed(worker)
+  worker.postMessage('close')
+  await sleep(150)
+
+  // The connection is still alive mid-drain; the client hangs up cleanly.
+  const closed = once(ws, 'close')
+  ws.close(1000, 'client done')
+  const [closeEvent] = await closed
+  strictEqual(closeEvent.code, 1000)
+
+  await workerClosed
+})
+
+test('server close destroys websockets after upgradeDrainTimeout', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-drain-timeout')
+  const worker = await createWebSocketWorker(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'ws-1',
+    domain: 'myserver.local',
+    upgradeDrainTimeout: 300
+  })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:myserver.local', 1)
+
+  const ws = new WebSocket('ws://myserver.local/', { dispatcher: agent })
+  ws.addEventListener('error', () => {})
+  await waitForOpen(ws)
+
+  const workerClosed = waitForClosed(worker)
+  const closed = once(ws, 'close')
+  worker.postMessage('close')
+
+  const [closeEvent] = await closed
+  strictEqual(closeEvent.code, 1006)
+  await workerClosed
+})
+
+test('upgradeDrainTimeout 0 destroys websockets immediately on close', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-drain-zero')
+  const worker = await createWebSocketWorker(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'ws-1',
+    domain: 'myserver.local',
+    upgradeDrainTimeout: 0
+  })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:myserver.local', 1)
+
+  const ws = new WebSocket('ws://myserver.local/', { dispatcher: agent })
+  ws.addEventListener('error', () => {})
+  await waitForOpen(ws)
+
+  const workerClosed = waitForClosed(worker)
+  const closed = once(ws, 'close')
+  worker.postMessage('close')
+
+  const [closeEvent] = await closed
+  strictEqual(closeEvent.code, 1006)
+  await workerClosed
+})
+
+test('replaceServer updates the upgrade capability in the mesh', async t => {
+  const meshId = `v2-ws-replace-${Date.now()}`
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+
+  const server = createServer({ meshId, domain: 'replace.local', server: (_req: any, res: any) => res.end('x') })
+  await server.ready
+  t.after(() => server.close())
+
+  const interceptor = createInterceptor({ meshId, domain: '.local' })
+  await interceptor.ready
+  t.after(() => interceptor.close())
+  await waitForMeshServers(interceptor, 'http:replace.local', 1)
+
+  strictEqual(interceptor.getMesh()?.servers[server.serverId]?.capabilities?.upgrade, false)
+  const agent = new Agent().compose(interceptor)
+  await rejects(
+    agent.upgrade({ origin: 'http://replace.local', path: '/', protocol: 'websocket' }),
+    NoAvailableTargetError
+  )
+
+  const httpServer = createHttpServer()
+  const wss = new WebSocketServer({ server: httpServer })
+  wss.on('connection', socket => {
+    socket.on('message', (data, isBinary) => socket.send(data as Buffer, { binary: isBinary }))
+  })
+  t.after(() => wss.close())
+
+  server.replaceServer(httpServer)
+  await waitForUpgradeCapability(interceptor, server.serverId, true)
+
+  const ws = new WebSocket('ws://replace.local/', { dispatcher: agent })
+  await waitForOpen(ws)
+  ws.send('upgraded')
+  const [message] = await once(ws, 'message')
+  strictEqual(message.data, 'upgraded')
+
+  const closed = once(ws, 'close')
+  ws.close(1000)
+  await closed
+})
+
+test('publishes upgrade diagnostics on both sides', async t => {
+  const events: Array<{ channel: string; payload: any }> = []
+  const channelNames = [
+    'undici-thread-interceptor:upgrade:start',
+    'undici-thread-interceptor:upgrade:established',
+    'undici-thread-interceptor:upgrade:rejected',
+    'undici-thread-interceptor:upgrade:closed',
+    'undici-thread-interceptor:server:upgrade:start',
+    'undici-thread-interceptor:server:upgrade:closed'
+  ]
+  const listeners = channelNames.map(name => {
+    const listener = (payload: unknown) => events.push({ channel: name, payload })
+    diagnosticsChannel.subscribe(name, listener)
+    return { name, listener }
+  })
+  t.after(() => {
+    for (const { name, listener } of listeners) {
+      diagnosticsChannel.unsubscribe(name, listener)
+    }
+  })
+
+  const meshId = `v2-ws-diagnostics-${Date.now()}`
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+
+  const httpServer = createHttpServer()
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
+  wss.on('connection', socket => {
+    socket.on('message', (data, isBinary) => socket.send(data as Buffer, { binary: isBinary }))
+  })
+  t.after(() => wss.close())
+
+  const server = createServer({ meshId, domain: 'diag.local', server: httpServer })
+  await server.ready
+  t.after(() => server.close())
+
+  const interceptor = createInterceptor({ meshId, domain: '.local' })
+  await interceptor.ready
+  t.after(() => interceptor.close())
+  await waitForMeshServers(interceptor, 'http:diag.local', 1)
+  const agent = new Agent().compose(interceptor)
+
+  const ws = new WebSocket('ws://diag.local/ws', { dispatcher: agent })
+  await waitForOpen(ws)
+  const closed = once(ws, 'close')
+  ws.close(1000)
+  await closed
+
+  const rejectedWs = new WebSocket('ws://diag.local/nope', { dispatcher: agent })
+  await waitForFailure(rejectedWs)
+
+  for (let i = 0; i < 50 && new Set(events.map(e => e.channel)).size < channelNames.length; i++) {
+    await sleep(20)
+  }
+
+  const byChannel = (channel: string): any[] =>
+    events.filter(event => event.channel === `undici-thread-interceptor:${channel}`).map(event => event.payload)
+
+  deepStrictEqual(new Set(events.map(event => event.channel)), new Set(channelNames))
+
+  const established = byChannel('upgrade:established')
+  strictEqual(established.length, 1)
+  strictEqual(established[0].statusCode, 101)
+  strictEqual(established[0].serverId, server.serverId)
+  strictEqual(established[0].meshId, meshId)
+  strictEqual(established[0].path, '/ws')
+
+  const rejected = byChannel('upgrade:rejected')
+  strictEqual(rejected.length, 1)
+  strictEqual(rejected[0].statusCode, 400)
+  strictEqual(rejected[0].path, '/nope')
+
+  // Both connections reach the server-side emitter; ws rejects /nope itself.
+  const serverStart = byChannel('server:upgrade:start')
+  deepStrictEqual(serverStart.map(payload => payload.request.url).sort(), ['/nope', '/ws'])
+  strictEqual(serverStart[0].interceptorId, interceptor.interceptorId)
 })
 
 test('multiple websockets to the same worker share one peer channel', async t => {

@@ -397,25 +397,35 @@ variant. Both `ws` and `@fastify/websocket` become dev dependencies.
    loop handle.
 3. **Phase 2:** lifecycle (drain/pause/force), capability flag + selection
    behavior, diagnostics, docs (README + MIGRATION note).
+   **Status: DONE.** Landed: `upgradeDrainTimeout` (default 30000 ms, `0` =
+   destroy immediately) — `close()` waits for established sockets to close
+   naturally, then destroys the rest; `capabilities.upgrade` on
+   `MeshServer` (computed as "can possibly upgrade": explicit handler,
+   `'upgrade'`-capable emitter, Fastify `.server`, or TCP mode; recomputed
+   on `replaceServer()`), with upgrade selection skipping non-capable
+   targets; seven diagnostics channels
+   (`upgrade:start/established/rejected/closed` interceptor-side,
+   `server:upgrade:start/reject/closed` server-side); README WebSockets
+   section + `ServerOptions` reference + MIGRATION note. Bonus fix:
+   thread-mode HTTP requests to `http.Server`-registered targets now work
+   (replayed through the server's `'request'` listeners, which
+   `light-my-request` cannot inject into directly).
 
-## Open questions
+## Open questions — all resolved
 
-1. **Selection vs capability:** when a selected target lacks upgrade
-   capability, skip it and keep scanning (throw `NoAvailableTargetError`
-   only if none can upgrade), or fail fast on the first non-capable pick?
-   Skipping matches the "paused" precedent and mixed meshes — leaning skip.
-2. **Drain default:** should `close()` wait indefinitely for WebSockets
-   (matches today's drain-everything promise, but one idle client blocks
-   shutdown forever), use a default `upgradeDrainTimeout`, or destroy
-   immediately after the HTTP drain? Leaning: default timeout,
-   configurable, `0` = destroy immediately.
-3. **`ServerOptions.upgrade` handler option:** ship in phase 1 or wait for
-   demand? Fastify duck-typing covers the known consumers, but the explicit
-   option is cheap and gives bare-handler users (no `http.Server` at all) a
-   way in. Leaning: ship it.
-4. **Non-upgradable target response:** in-band `501` (client sees a clean
-   HTTP failure) vs `ERROR` message (typed, but reads as a transport
-   failure). Leaning in-band `501` — it's what a real server would do.
-5. **Established connections vs mesh changes:** proposal — established
+1. **Selection vs capability:** RESOLVED — skip non-capable targets and
+   keep scanning; `NoAvailableTargetError` only when no target can
+   upgrade. Capability is computed optimistically ("can possibly
+   upgrade"), so a capable target with no `'upgrade'` listener attached at
+   request time still answers with an in-band `501`.
+2. **Drain default:** RESOLVED — `upgradeDrainTimeout`, default 30000 ms,
+   configurable, `0` destroys immediately after the HTTP drain.
+3. **`ServerOptions.upgrade` handler option:** RESOLVED — shipped in
+   phase 1.
+4. **Non-upgradable target response:** RESOLVED — in-band (`503` for
+   unavailable servers, `501` for non-upgradable targets); `ERROR` is
+   reserved for transport-level failures.
+5. **Established connections vs mesh changes:** RESOLVED — established
    sockets are never migrated or re-routed; mesh updates affect new
-   connections only. Worth stating explicitly in the docs.
+   connections only. Pause keeps established connections; `close()`
+   drains them per (2); worker/peer/interceptor teardown destroys them.

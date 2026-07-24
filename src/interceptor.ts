@@ -296,7 +296,7 @@ export class Interceptor {
     } as DispatchOptions
     runHooks(this.#hooks.onRequest, request, context)
 
-    const server = this.#selectServer(key, meshOrigin.servers, request, context)
+    const server = this.#selectServer(key, meshOrigin.servers, request, context, Boolean(opts.upgrade))
     if (!server) {
       throw new NoAvailableTargetError(key)
     }
@@ -352,7 +352,8 @@ export class Interceptor {
     origin: string,
     serverIds: string[],
     request: DispatchOptions,
-    context: Record<PropertyKey, unknown>
+    context: Record<PropertyKey, unknown>,
+    needsUpgrade = false
   ): MeshServer | null {
     const cursor = this.#cursors.get(origin) ?? Math.floor(Math.random() * serverIds.length)
 
@@ -360,7 +361,11 @@ export class Interceptor {
       const index = (cursor + i) % serverIds.length
       const server = this.#mesh?.servers[serverIds[index]]
 
-      if (server?.state === 'available' && this.#isTargetAllowed(request, server, context)) {
+      if (
+        server?.state === 'available' &&
+        (!needsUpgrade || server.capabilities?.upgrade !== false) &&
+        this.#isTargetAllowed(request, server, context)
+      ) {
         this.#cursors.set(origin, (index + 1) % serverIds.length)
         return server
       }
@@ -491,6 +496,15 @@ export class Interceptor {
     let settled = false
     let responseTimeout: ReturnType<typeof setTimeout> | null = null
 
+    const upgradeDiagnostics = {
+      meshId: this.#options.meshId,
+      origin: server.origin,
+      interceptorId: this.interceptorId,
+      serverId: server.serverId,
+      method: request.method,
+      path: url.pathname + url.search
+    }
+
     const finish = (error?: Error): void => {
       if (settled) {
         return
@@ -552,7 +566,17 @@ export class Interceptor {
       }
 
       peer.tunnels.add(socket)
-      socket.on('close', () => peer.tunnels.delete(socket))
+      socket.on('close', () => {
+        peer.tunnels.delete(socket)
+
+        if (channels.upgradeClosed.hasSubscribers) {
+          channels.upgradeClosed.publish({ ...upgradeDiagnostics })
+        }
+      })
+
+      if (channels.upgradeEstablished.hasSubscribers) {
+        channels.upgradeEstablished.publish({ ...upgradeDiagnostics, statusCode: parsedHead.statusCode })
+      }
 
       controller.rawHeaders = parsedHead.rawHeaders
       runHooks(this.#hooks.onResponse, request, parsedHead, context)
@@ -614,6 +638,11 @@ export class Interceptor {
           // Non-101 handshake rejection: replay it as a regular HTTP
           // response so it surfaces exactly like a network response would.
           replaying = true
+
+          if (channels.upgradeRejected.hasSubscribers) {
+            channels.upgradeRejected.publish({ ...upgradeDiagnostics, statusCode: head.statusCode })
+          }
+
           runHooks(this.#hooks.onResponse, request, head, context)
           handler.onResponseStart?.(controller as any, head.statusCode, head.headers as any, head.statusMessage)
 
@@ -666,6 +695,10 @@ export class Interceptor {
       protocol: typeof request.upgrade === 'string' ? request.upgrade : 'websocket',
       headers: request.headers as Record<string, string | string[] | number | undefined>,
       socketPort: channel.port2
+    }
+
+    if (channels.upgradeStart.hasSubscribers) {
+      channels.upgradeStart.publish({ ...upgradeDiagnostics })
     }
 
     handler.onRequestStart?.(controller as any, {})
