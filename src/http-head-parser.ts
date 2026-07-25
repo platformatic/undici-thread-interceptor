@@ -1,6 +1,38 @@
 const MAX_HEAD_SIZE = 16 * 1024
 const HEAD_TERMINATOR = Buffer.from('\r\n\r\n')
 
+function parseHeaderLines (lines: string[]): {
+  headers: Record<string, string | string[]>
+  rawHeaders: Buffer[]
+} {
+  const headers: Record<string, string | string[]> = {}
+  const rawHeaders: Buffer[] = []
+
+  for (let i = 1; i < lines.length; i++) {
+    const separator = lines[i].indexOf(':')
+
+    if (separator === -1) {
+      throw new InvalidResponseHeadError(`invalid header line: ${lines[i]}`)
+    }
+
+    const name = lines[i].slice(0, separator).trim().toLowerCase()
+    const value = lines[i].slice(separator + 1).trim()
+    const existing = headers[name]
+
+    if (existing === undefined) {
+      headers[name] = value
+    } else if (Array.isArray(existing)) {
+      existing.push(value)
+    } else {
+      headers[name] = [existing, value]
+    }
+
+    rawHeaders.push(Buffer.from(name, 'latin1'), Buffer.from(value, 'latin1'))
+  }
+
+  return { headers, rawHeaders }
+}
+
 export interface ParsedResponseHead {
   statusCode: number
   statusMessage: string
@@ -46,36 +78,64 @@ export class HttpResponseHeadParser {
       throw new InvalidResponseHeadError(`invalid status line: ${lines[0]}`)
     }
 
-    const headers: Record<string, string | string[]> = {}
-    const rawHeaders: Buffer[] = []
-
-    for (let i = 1; i < lines.length; i++) {
-      const separator = lines[i].indexOf(':')
-
-      if (separator === -1) {
-        throw new InvalidResponseHeadError(`invalid header line: ${lines[i]}`)
-      }
-
-      const name = lines[i].slice(0, separator).trim().toLowerCase()
-      const value = lines[i].slice(separator + 1).trim()
-      const existing = headers[name]
-
-      if (existing === undefined) {
-        headers[name] = value
-      } else if (Array.isArray(existing)) {
-        existing.push(value)
-      } else {
-        headers[name] = [existing, value]
-      }
-
-      rawHeaders.push(Buffer.from(name, 'latin1'), Buffer.from(value, 'latin1'))
-    }
+    const { headers, rawHeaders } = parseHeaderLines(lines)
 
     return {
       statusCode: Number(match[1]),
       statusMessage: match[2] ?? '',
       headers,
       rawHeaders,
+      rest: this.#buffer.subarray(terminator + HEAD_TERMINATOR.length)
+    }
+  }
+}
+
+export interface ParsedRequestHead {
+  method: string
+  path: string
+  headers: Record<string, string | string[]>
+  // The original head bytes, terminator included, for byte-level forwarding.
+  raw: Buffer
+  rest: Buffer
+}
+
+/**
+ * Incremental parser for an HTTP/1.1 request head written by a node:http
+ * client into a tunneled connection.
+ */
+export class HttpRequestHeadParser {
+  #buffer: Buffer
+
+  constructor () {
+    this.#buffer = Buffer.alloc(0)
+  }
+
+  feed (chunk: Buffer): ParsedRequestHead | null {
+    this.#buffer = this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk])
+
+    const terminator = this.#buffer.indexOf(HEAD_TERMINATOR)
+    if (terminator === -1) {
+      if (this.#buffer.length > MAX_HEAD_SIZE) {
+        throw new InvalidResponseHeadError('request head exceeds maximum size')
+      }
+
+      return null
+    }
+
+    const lines = this.#buffer.subarray(0, terminator).toString('latin1').split('\r\n')
+    const match = /^([A-Za-z-]+) (\S+) HTTP\/1\.[01]$/.exec(lines[0])
+
+    if (!match) {
+      throw new InvalidResponseHeadError(`invalid request line: ${lines[0]}`)
+    }
+
+    const { headers } = parseHeaderLines(lines)
+
+    return {
+      method: match[1].toUpperCase(),
+      path: match[2],
+      headers,
+      raw: this.#buffer.subarray(0, terminator + HEAD_TERMINATOR.length),
       rest: this.#buffer.subarray(terminator + HEAD_TERMINATOR.length)
     }
   }

@@ -164,7 +164,32 @@ Supported clients — anything that dispatches through undici:
 - Node's global `WebSocket` via `setGlobalDispatcher(agent)` from undici — no per-connection options needed. (Passing `{ dispatcher }` to the global `WebSocket` also works on Node ≥ 24; on Node 22 the bundled undici predates the current handler API, so prefer `setGlobalDispatcher` or the undici import there.)
 - `dispatcher.upgrade()` for manual HTTP upgrades.
 
-The `ws` package is supported on the **server** side only. Its client speaks `node:http` directly and never consults undici dispatchers, so it cannot reach mesh domains.
+### node:http clients and `@fastify/http-proxy`
+
+Clients that speak `node:http` directly — most notably the `ws` package's client — do not consult undici dispatchers. For those, `interceptor.createUpgradeAgent()` returns a `node:http` `Agent` that routes upgrade requests for mesh domains through the mesh and falls back to real TCP for every other host:
+
+```js
+import { WebSocket } from 'ws'
+
+const ws = new WebSocket('ws://api.local/updates', {
+  agent: interceptor.createUpgradeAgent()
+})
+```
+
+This is how `@fastify/http-proxy` WebSocket proxying reaches mesh targets — pass the agent through `wsClientOptions` and the undici dispatcher for the HTTP path:
+
+```js
+import proxy from '@fastify/http-proxy'
+
+await app.register(proxy, {
+  upstream: 'http://api.local',
+  websocket: true,
+  wsClientOptions: { agent: interceptor.createUpgradeAgent() },
+  undici: agent
+})
+```
+
+The agent supports upgrade requests only: regular HTTP requests to mesh domains through it receive a `501` (use the undici interceptor for those). Mesh upstreams must use `ws://`/`http://`; interceptor `onRequest`/`allowTarget` hooks and `connectTimeout` apply, while response hooks and the `upgrade:established`/`upgrade:rejected` diagnostics do not fire on this path — after routing, the connection is a direct byte pipe and the handshake response is parsed by the client itself.
 
 Targets advertise an `upgrade` capability in the mesh (`capabilities.upgrade`). Bare request handlers cannot accept upgrades and are skipped by upgrade selection; if no target can upgrade, dispatch fails with `NoAvailableTargetError`. To serve upgrades without an `http.Server`, pass an explicit handler:
 
@@ -381,6 +406,7 @@ The returned value is both an Undici compose interceptor and an object with:
 - `close()`
 - `updateMetadata(metadata)`
 - `getMesh()`
+- `createUpgradeAgent()` — a `node:http` `Agent` for routing upgrade requests from node:http clients (e.g. `ws`) through the mesh
 
 `interceptorId` defaults to a `crypto.randomUUID()` value. `coordinatorThreadId` defaults to `0`.
 

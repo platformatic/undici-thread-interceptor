@@ -1,6 +1,8 @@
 import hyperid from 'hyperid'
 import { AsyncResource } from 'node:async_hooks'
-import type { Readable } from 'node:stream'
+import { Agent as HttpAgent } from 'node:http'
+import { connect as netConnect } from 'node:net'
+import type { Duplex, Readable } from 'node:stream'
 import type { MessagePort } from 'node:worker_threads'
 import { MessageChannel, threadId } from 'node:worker_threads'
 import type { Dispatcher } from 'undici'
@@ -13,7 +15,13 @@ import {
   type PeerDiagnosticsPayload
 } from './diagnostics.ts'
 import { ConnectTimeoutError, NoAvailableTargetError } from './errors.ts'
-import { HttpResponseHeadParser, type ParsedResponseHead } from './http-head-parser.ts'
+import { FakeSocket } from './fake-socket.ts'
+import {
+  HttpRequestHeadParser,
+  HttpResponseHeadParser,
+  type ParsedRequestHead,
+  type ParsedResponseHead
+} from './http-head-parser.ts'
 import { MessagePortDuplex, MessagePortReadable, MessagePortWritable, toBufferChunk } from './message-port-streams.ts'
 import {
   Message,
@@ -67,6 +75,7 @@ export interface InterceptorFunction extends Dispatcher.DispatcherComposeInterce
   close: () => void
   updateMetadata: (metadata: unknown) => void
   getMesh: () => Mesh | null
+  createUpgradeAgent: () => HttpAgent
 }
 
 type Dispatch = Dispatcher.Dispatch
@@ -155,6 +164,14 @@ class HookHandler {
   }
 }
 
+function respondInBand (port: MessagePort, statusCode: number, statusMessage: string): void {
+  port.postMessage({
+    chunks: [Buffer.from(`HTTP/1.1 ${statusCode} ${statusMessage}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`)]
+  })
+  port.postMessage({ fin: true })
+  setImmediate(() => port.close())
+}
+
 function isStreamBody (body: unknown): body is Readable {
   return (
     typeof (body as Readable)?.pipe === 'function' ||
@@ -232,6 +249,7 @@ export class Interceptor {
     fn.close = this.close.bind(this)
     fn.updateMetadata = this.updateMetadata.bind(this)
     fn.getMesh = this.getMesh.bind(this)
+    fn.createUpgradeAgent = this.createUpgradeAgent.bind(this)
     return fn
   }
 
@@ -704,6 +722,251 @@ export class Interceptor {
     handler.onRequestStart?.(controller as any, {})
     peer.port.postMessage(message, [channel.port2])
     await promise
+  }
+
+  /**
+   * A node:http Agent that routes HTTP upgrade requests for mesh domains
+   * through the mesh. This makes node:http-based WebSocket clients — most
+   * notably the ws package, and therefore @fastify/http-proxy's WebSocket
+   * proxying via wsClientOptions — work against mesh targets. Non-mesh
+   * hosts fall back to a real TCP connection, so the agent is safe to use
+   * for mixed upstreams.
+   */
+  createUpgradeAgent (): HttpAgent {
+    const agent = new HttpAgent({ keepAlive: false })
+
+    ;(agent as any).createConnection = (options: any, callback?: (err: Error | null, stream?: Duplex) => void) => {
+      const socket = this.#createUpgradeConnection(options) ?? netConnect(options)
+
+      if (callback) {
+        callback(null, socket)
+        return
+      }
+
+      return socket
+    }
+
+    return agent
+  }
+
+  #createUpgradeConnection (options: { host?: string }): Duplex | null {
+    const hostname = String(options.host ?? '').toLowerCase()
+
+    if (this.#domain === undefined || !hostname.endsWith(this.#domain)) {
+      return null
+    }
+
+    const key = normalizeOrigin(hostname)
+
+    if (!this.#mesh?.origins[key]) {
+      return null
+    }
+
+    const channel = new MessageChannel()
+    const clientSocket = new FakeSocket({ port: channel.port1 })
+    const port = channel.port2
+    const parser = new HttpRequestHeadParser()
+
+    const onMessage = (control: { chunks?: unknown[]; fin?: boolean; err?: Error }): void => {
+      if (control.err || control.fin) {
+        port.off('message', onMessage)
+        port.close()
+        return
+      }
+
+      if (!Array.isArray(control.chunks)) {
+        return
+      }
+
+      try {
+        for (let i = 0; i < control.chunks.length; i++) {
+          const raw = toBufferChunk(control.chunks[i])
+          const head = parser.feed(typeof raw === 'string' ? Buffer.from(raw) : raw)
+
+          if (!head) {
+            continue
+          }
+
+          port.off('message', onMessage)
+
+          const rest = Buffer.concat([
+            head.rest,
+            ...control.chunks.slice(i + 1).map(chunk => {
+              const value = toBufferChunk(chunk)
+              return typeof value === 'string' ? Buffer.from(value) : value
+            })
+          ])
+
+          this.#routeAgentUpgrade(clientSocket, port, key, hostname, head, rest).catch(() => {
+            respondInBand(port, 502, 'Bad Gateway')
+          })
+
+          return
+        }
+
+        // Head incomplete: grant write credit so node:http can keep writing.
+        port.postMessage({ more: true })
+      } catch {
+        port.off('message', onMessage)
+        respondInBand(port, 400, 'Bad Request')
+      }
+    }
+
+    port.on('message', onMessage)
+    return clientSocket
+  }
+
+  async #routeAgentUpgrade (
+    clientSocket: FakeSocket,
+    port: MessagePort,
+    key: string,
+    host: string,
+    head: ParsedRequestHead,
+    rest: Buffer
+  ): Promise<void> {
+    const upgradeHeader = head.headers.upgrade
+
+    if (!upgradeHeader) {
+      respondInBand(port, 501, 'Not Implemented')
+      return
+    }
+
+    const request = {
+      origin: `http://${host}`,
+      method: head.method,
+      path: head.path,
+      headers: sanitizeHeaders(head.headers, host),
+      upgrade: Array.isArray(upgradeHeader) ? upgradeHeader[0] : upgradeHeader
+    }
+    const context: Record<PropertyKey, unknown> = {}
+    runHooks(this.#hooks.onRequest, request, context)
+
+    const meshOrigin = this.#mesh?.origins[key]
+    const server = meshOrigin
+      ? this.#selectServer(key, meshOrigin.servers, request as unknown as DispatchOptions, context, true)
+      : null
+
+    if (!server) {
+      respondInBand(port, 503, 'Service Unavailable')
+      return
+    }
+
+    if (server.mode === 'tcp') {
+      this.#spliceAgentUpgradeToTcp(port, server.address, head, rest)
+      return
+    }
+
+    const peer = await this.#ensurePeerMessagePort(server)
+    const id = this.#requestId()
+
+    const upgradeDiagnostics = {
+      meshId: this.#options.meshId,
+      origin: server.origin,
+      interceptorId: this.interceptorId,
+      serverId: server.serverId,
+      method: head.method,
+      path: head.path
+    }
+
+    peer.tunnels.add(clientSocket)
+    clientSocket.on('close', () => {
+      peer.tunnels.delete(clientSocket)
+
+      if (channels.upgradeClosed.hasSubscribers) {
+        channels.upgradeClosed.publish({ ...upgradeDiagnostics })
+      }
+    })
+
+    let responseTimeout: ReturnType<typeof setTimeout> | null = null
+    const settle = (): void => {
+      peer.pending.delete(id)
+
+      if (responseTimeout !== null) {
+        clearTimeout(responseTimeout)
+        responseTimeout = null
+      }
+    }
+
+    // After the port transfer the response bytes flow straight to the
+    // client, so the first readable data doubles as the "response started"
+    // signal that disarms the timeout and the pending ERROR entry.
+    clientSocket.once('data', settle)
+    clientSocket.once('close', settle)
+
+    peer.pending.set(id, {
+      request,
+      handler: {},
+      context,
+      controller: null,
+      resolve: settle,
+      reject: (error: Error) => {
+        settle()
+        clientSocket.destroy(error)
+      },
+      onMessage: AsyncResource.bind((value: unknown) => {
+        const message = value as { type?: string }
+
+        if (message.type === Message.ERROR) {
+          settle()
+          clientSocket.destroy((value as ErrorMessage).error)
+        }
+      })
+    } as unknown as PendingRequest)
+
+    if (this.#connectTimeout > 0) {
+      responseTimeout = setTimeout(() => {
+        settle()
+        clientSocket.destroy(new ConnectTimeoutError(`Timeout while waiting for upgrade from ${server.serverId}.`))
+      }, this.#connectTimeout)
+      responseTimeout.unref()
+    }
+
+    const message: UpgradeMessage = {
+      type: Message.UPGRADE,
+      id,
+      meshId: this.#options.meshId,
+      interceptorId: this.interceptorId,
+      origin: server.origin,
+      path: head.path,
+      method: head.method,
+      protocol: request.upgrade,
+      headers: request.headers as Record<string, string | string[] | number | undefined>,
+      socketPort: port
+    }
+
+    if (rest.length > 0) {
+      message.head = rest
+    }
+
+    if (channels.upgradeStart.hasSubscribers) {
+      channels.upgradeStart.publish({ ...upgradeDiagnostics })
+    }
+
+    // Transferring the port turns the client socket into a direct pipe to
+    // the server thread; the handshake response and all frames flow through
+    // without another hop in this thread.
+    peer.port.postMessage(message, [port])
+  }
+
+  #spliceAgentUpgradeToTcp (port: MessagePort, address: string, head: ParsedRequestHead, rest: Buffer): void {
+    const url = new URL(address)
+    const tcp = netConnect({ host: url.hostname, port: Number(url.port) || (url.protocol === 'https:' ? 443 : 80) })
+    const local = new MessagePortDuplex({ port })
+
+    local.on('error', () => {})
+    tcp.on('error', () => {})
+    tcp.on('connect', () => {
+      tcp.write(head.raw)
+
+      if (rest.length > 0) {
+        tcp.write(rest)
+      }
+
+      local.pipe(tcp)
+      tcp.pipe(local)
+    })
+    tcp.on('close', () => local.destroy())
+    local.on('close', () => tcp.destroy())
   }
 
   async #ensurePeerMessagePort (server: Extract<MeshServer, { mode: 'thread' }>): Promise<Peer> {

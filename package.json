@@ -46,6 +46,7 @@
     "undici": "^8.5.0"
   },
   "devDependencies": {
+    "@fastify/http-proxy": "^11.6.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/core": "^2.8.0",
     "@opentelemetry/instrumentation-undici": "^0.29.0",

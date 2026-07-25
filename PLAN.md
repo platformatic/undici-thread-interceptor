@@ -302,6 +302,28 @@ the client code path is untouched.
 - HTTP/2 WebSocket (RFC 8441) — undici's client does not support it either.
 - Frame-level zero-copy fast path (Option C follow-up).
 
+## Phase 3 (added post-plan): node:http clients via an upgrade Agent
+
+**Status: DONE.** The ws package's *client* speaks node:http and never
+consults undici dispatchers, but `@fastify/http-proxy` proxies WebSockets
+with exactly that client — so the mesh must be reachable from it.
+Solution: `interceptor.createUpgradeAgent()` returns a `node:http.Agent`
+whose `createConnection` hands node:http a `FakeSocket` over an in-process
+`MessageChannel`, mirrors the phase-0 trick in the opposite direction — an
+`HttpRequestHeadParser` consumes the request head the client writes — and
+then routes through the shared selection/hook machinery. For thread
+targets the port itself is transferred in the `UPGRADE` message (the
+`head` field carries any pipelined bytes), turning the client socket into
+a direct inter-thread pipe: the server's `101` and all frames flow through
+with no extra hop, and the client parses the handshake response natively.
+Non-mesh hosts fall back to `net.connect`, TCP targets are spliced to a
+real socket, no-target and non-upgrade requests answer in-band `503`/`501`,
+and `connectTimeout` disarms on first response bytes. `wsClientOptions:
+{ agent }` wires it into `@fastify/http-proxy`, verified end-to-end in
+`test/websocket-agent.test.ts`. Trade-off: response hooks and
+`established`/`rejected` diagnostics don't fire on this path — after the
+transfer the interceptor never sees the response.
+
 ## Testing plan (`test/websocket.test.ts` + fixtures)
 
 Client: undici `WebSocket` over a composed `Agent`. Server fixtures: a
