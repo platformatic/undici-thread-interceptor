@@ -156,7 +156,11 @@ import { WebSocket } from 'undici'
 const ws = new WebSocket('ws://api.local/updates', { dispatcher: agent })
 ```
 
-The connection is tunneled between threads over a dedicated `MessagePort` as raw bytes: the server performs its real handshake, so subprotocols, ping/pong, close codes, and `permessage-deflate` behave exactly as over TCP. TCP targets upgrade over their real address. Routing, `allowTarget` hooks, and `connectTimeout` apply to upgrades the same way they apply to requests.
+Use `ws://` URLs for mesh domains. Mesh origins are `http:`-based, so a `wss://` URL never matches the mesh — it is delegated to regular Undici dispatch, which will attempt a real TLS connection. There is no TLS inside the mesh; the tunnel runs over `MessagePort`s.
+
+The connection is tunneled between threads over a dedicated `MessagePort` as raw bytes: the server performs its real handshake, so subprotocols, ping/pong, close codes, and `permessage-deflate` behave exactly as over TCP. TCP targets upgrade over their real address. Routing, `allowTarget` hooks, and `connectTimeout` apply to upgrades the same way they apply to requests — `connectTimeout` covers the window from dispatch until the handshake response arrives.
+
+Handshake rejections are transparent: when the server answers an upgrade with a non-101 response (for example `ws` rejecting with a `400`), the response is replayed to the client as a regular HTTP response, exactly as it would arrive over TCP. A target that advertises the upgrade capability but has no `'upgrade'` listener attached at request time answers `501`; a server that is unavailable when the upgrade arrives (a selection race with pause/close) answers `503`.
 
 Supported clients — anything that dispatches through undici:
 
@@ -204,7 +208,7 @@ createMeshServer({
 })
 ```
 
-`server.close()` drains established connections: it waits up to `upgradeDrainTimeout` milliseconds (default `30000`) for them to close on their own, then destroys the remainder. Use `0` to destroy them immediately. Paused servers keep established connections but reject new upgrades. `CONNECT` requests to mesh targets are rejected.
+`server.close()` drains established connections: it waits up to `upgradeDrainTimeout` milliseconds (default `30000`) for them to close on their own, then destroys the remainder. Use `0` to destroy them immediately. Paused servers keep established connections but reject new upgrades. Established connections are never migrated: mesh updates only affect new connections, and `interceptor.close()` or the loss of either thread destroys the tunnel — the peer sees an abnormal closure (WebSocket close code `1006`). `CONNECT` requests to mesh targets are rejected.
 
 ## Domains
 
@@ -255,6 +259,8 @@ const interceptor = createInterceptor({
 
 `allowTarget` is an access-control hook. Returning `false` denies that target and selection continues with the next available target. In hook arrays, evaluation stops on the first `false`.
 
+For WebSocket upgrades, `onRequest` and `allowTarget` run as usual and `onResponse` fires with the handshake response (`statusCode: 101` on establishment, or the rejection status). `onResponseEnd` fires for rejected handshakes but never for established connections — they are long-lived and have no response end. Neither response hook fires on the `createUpgradeAgent()` path, where the handshake response goes straight to the client.
+
 ### Server Hooks
 
 ```js
@@ -276,6 +282,8 @@ const server = createServer({
 ```
 
 Server hooks are notification hooks. `onRequest` does not receive a `next` callback and cannot replace the application handler.
+
+For WebSocket upgrades, server-side `onRequest` fires with the synthetic upgrade request before it is emitted to the upgrade target; `onResponse` does not fire for upgrades because the handshake response is written directly to the socket by the upgrade handler.
 
 ## Metadata
 
@@ -447,8 +455,8 @@ TCP targets are dispatched through Undici directly and do not emit synthetic thr
 
 ## Errors
 
-- `NoAvailableTargetError` is thrown when a domain exists in the mesh but no available target can serve it.
-- `ConnectTimeoutError` is thrown when the interceptor times out waiting for a thread-mode response.
+- `NoAvailableTargetError` is thrown when a domain exists in the mesh but no available target can serve it — for upgrades, that includes meshes where no target advertises the upgrade capability.
+- `ConnectTimeoutError` is thrown when the interceptor times out waiting for a thread-mode response or a WebSocket handshake response, on both the dispatcher and `createUpgradeAgent()` paths.
 
 ## Migration
 
