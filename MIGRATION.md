@@ -283,6 +283,14 @@ Node's `postMessageToThread()` cannot send directly to the same thread. v2 handl
 
 Applications do not need special setup for same-thread tests or single-thread local usage, but they should still create explicit coordinator, server, and interceptor instances.
 
+## WebSockets
+
+v1 had no WebSocket or HTTP upgrade support; upgrades against thread targets failed. v2 tunnels upgraded connections between threads over dedicated `MessagePort`s.
+
+No client changes are required: undici's `WebSocket` with the composed dispatcher works against mesh domains. On the server side, register a Node `http.Server` (or a Fastify instance with `@fastify/websocket`) instead of a bare request handler, or pass an explicit `upgrade` handler in `createServer()`. Bare handlers advertise `capabilities.upgrade: false` in the mesh and are skipped by upgrade selection.
+
+`server.close()` waits up to `upgradeDrainTimeout` milliseconds (default `30000`) for established connections to close before destroying them. See the README's WebSockets section for details.
+
 ## Lifecycle Mapping
 
 Coordinator lifecycle:

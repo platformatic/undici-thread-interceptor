@@ -46,12 +46,14 @@
     "undici": "^8.5.0"
   },
   "devDependencies": {
+    "@fastify/http-proxy": "^11.6.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/core": "^2.8.0",
     "@opentelemetry/instrumentation-undici": "^0.29.0",
     "@opentelemetry/sdk-trace-base": "^2.8.0",
     "@platformatic/tsconfig": "^0.2.0",
     "@types/node": "^26.0.1",
+    "@types/ws": "^8.18.1",
     "atomic-sleep": "^1.0.0",
     "c8": "^11.0.0",
     "cleaner-spec-reporter": "^1.0.3",
@@ -62,7 +64,8 @@
     "neostandard": "^0.13.0",
     "prettier": "^3.9.4",
     "prettier-plugin-space-before-function-paren": "^0.1.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "ws": "^8.21.1"
   },
   "engines": {
     "node": ">= 22.22.0 || >= 24.6.0"
