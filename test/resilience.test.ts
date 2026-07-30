@@ -1,4 +1,4 @@
-import { deepStrictEqual, rejects, strictEqual } from 'node:assert'
+import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert'
 import { once } from 'node:events'
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
@@ -562,4 +562,241 @@ test('interceptor ignores peer messages without matching pending requests', asyn
     channel.port2.postMessage({ err: new Error('stream body failed') })
     await remoteErrorDone.promise
   }
+})
+
+test('closes orphaned response body ports so the sender can release buffered data', async t => {
+  const meshId = directMeshId('orphaned-body-ports')
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+
+  const serverChannel = new MessageChannel()
+  coordinator.connectMember({
+    type: Message.COORDINATOR_CONNECT,
+    meshId,
+    role: 'server',
+    threadId,
+    port: serverChannel.port1,
+    server: {
+      id: 'server-1',
+      origin: 'http:orphaned.local',
+      state: 'available',
+      mode: 'thread'
+    }
+  } as CoordinatorConnectMessage)
+  t.after(() => serverChannel.port2.close())
+
+  async function createInterceptor (connectTimeout?: number): Promise<Interceptor> {
+    const interceptor = new Interceptor({ meshId, domain: '.local', connectTimeout })
+    t.after(() => interceptor.close())
+    await interceptor.ready
+    await waitForServer(interceptor, 'http:orphaned.local')
+    return interceptor
+  }
+
+  // The peer channel is created lazily by the first dispatch, so this has to be
+  // called before dispatching, and each interceptor gets its own peer.
+  function connectPeer (interceptor: Interceptor): Promise<MessagePort> {
+    const peerReady = Promise.withResolvers<MessagePort>()
+    const onWorkerMessage = (value: unknown) => {
+      const message = value as { type?: Message; interceptorId?: string; port?: MessagePort }
+      if (
+        message.type === Message.PEER_CONNECT &&
+        message.interceptorId === interceptor.interceptorId &&
+        message.port
+      ) {
+        message.port.start()
+        peerReady.resolve(message.port)
+      }
+    }
+    process.on('workerMessage', onWorkerMessage)
+    t.after(() => process.off('workerMessage', onWorkerMessage))
+
+    return peerReady.promise.then(peer => {
+      t.after(() => peer.close())
+      return peer
+    })
+  }
+
+  const request = { origin: 'http://orphaned.local', path: '/', method: 'GET', headers: {} }
+  const sources: Readable[] = []
+  // A scenario that fails would otherwise leave its orphaned channel open, which
+  // keeps the event loop alive and turns a red test into a hanging one.
+  t.after(() => {
+    for (const source of sources) {
+      source.destroy()
+    }
+  })
+
+  // Each scenario streams the response body from a source that never ends: the
+  // sender keeps buffering until the receiving side tears the port down, so the
+  // source being destroyed is the observable proof that teardown propagated.
+  function orphanedBody (): {
+    sourceClosed: Promise<unknown>
+    transferable: ReturnType<typeof MessagePortWritable.asTransferable>
+  } {
+    const source = new Readable({ read () {} })
+    source.push('never delivered')
+    // The teardown destroys the source with an error: swallow it and observe
+    // 'close', which fires in both the error and the plain-close paths.
+    source.on('error', () => {})
+    sources.push(source)
+    const sourceClosed = requestWithTimeout(new Promise<void>(resolve => source.once('close', resolve)), 2000)
+    const transferable = MessagePortWritable.asTransferable(source)
+    return { sourceClosed, transferable }
+  }
+
+  {
+    // A response that arrives after the request timed out has no consumer. Only
+    // this scenario wants a short connectTimeout: for the other two it would be
+    // a deadline on the whole round trip, and a slow run would fail them.
+    const interceptor = await createInterceptor(100)
+    const peerConnected = connectPeer(interceptor)
+
+    const timedOut = Promise.withResolvers<void>()
+    interceptor.dispatch(() => false, { ...request } as any, {
+      onResponseError (_controller: any, error: Error) {
+        ok(error instanceof ConnectTimeoutError)
+        timedOut.resolve()
+      }
+    })
+
+    const peer = await peerConnected
+    const [lateRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+    await requestWithTimeout(timedOut.promise, 2000)
+
+    const { sourceClosed, transferable } = orphanedBody()
+    peer.postMessage(
+      { type: Message.RESPONSE, id: lateRequest.id, statusCode: 200, headers: {}, bodyPort: transferable.port },
+      transferable.transferList
+    )
+    await sourceClosed
+  }
+
+  const interceptor = await createInterceptor()
+  const peerConnected = connectPeer(interceptor)
+
+  {
+    // A response for a request that was aborted before the body started.
+    const aborted = Promise.withResolvers<void>()
+    interceptor.dispatch(() => false, { ...request } as any, {
+      onRequestStart (controller: any) {
+        controller.abort(new Error('aborted before response'))
+      },
+      onResponseError (_controller: any, error: Error) {
+        strictEqual(error.message, 'aborted before response')
+        aborted.resolve()
+      }
+    })
+
+    const peer = await peerConnected
+    const [abortedRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+
+    const { sourceClosed, transferable } = orphanedBody()
+    peer.postMessage(
+      { type: Message.RESPONSE, id: abortedRequest.id, statusCode: 200, headers: {}, bodyPort: transferable.port },
+      transferable.transferList
+    )
+    await sourceClosed
+    await requestWithTimeout(aborted.promise, 2000)
+  }
+
+  {
+    // An abort while the body is streaming must tear the stream down.
+    const errored = Promise.withResolvers<void>()
+    interceptor.dispatch(() => false, { ...request } as any, {
+      onResponseData (controller: any) {
+        controller.abort(new Error('aborted mid-stream'))
+      },
+      onResponseError (_controller: any, error: Error) {
+        strictEqual(error.message, 'aborted mid-stream')
+        errored.resolve()
+      }
+    })
+
+    const peer = await peerConnected
+    const [streamedRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+
+    const { sourceClosed, transferable } = orphanedBody()
+    peer.postMessage(
+      { type: Message.RESPONSE, id: streamedRequest.id, statusCode: 200, headers: {}, bodyPort: transferable.port },
+      transferable.transferList
+    )
+    await requestWithTimeout(errored.promise, 2000)
+    await sourceClosed
+  }
+})
+
+test('closes the response body port when the abort reason cannot be cloned', async t => {
+  const meshId = directMeshId('non-cloneable-abort')
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+
+  const serverChannel = new MessageChannel()
+  coordinator.connectMember({
+    type: Message.COORDINATOR_CONNECT,
+    meshId,
+    role: 'server',
+    threadId,
+    port: serverChannel.port1,
+    server: {
+      id: 'server-1',
+      origin: 'http:non-cloneable.local',
+      state: 'available',
+      mode: 'thread'
+    }
+  } as CoordinatorConnectMessage)
+  t.after(() => serverChannel.port2.close())
+
+  const interceptor = new Interceptor({ meshId, domain: '.local' })
+  t.after(() => interceptor.close())
+  await interceptor.ready
+  await waitForServer(interceptor, 'http:non-cloneable.local')
+
+  const peerReady = Promise.withResolvers<MessagePort>()
+  const onWorkerMessage = (value: unknown) => {
+    const message = value as { type?: Message; interceptorId?: string; port?: MessagePort }
+    if (message.type === Message.PEER_CONNECT && message.interceptorId === interceptor.interceptorId && message.port) {
+      message.port.start()
+      peerReady.resolve(message.port)
+    }
+  }
+  process.on('workerMessage', onWorkerMessage)
+  t.after(() => process.off('workerMessage', onWorkerMessage))
+
+  // Abort reasons come from the caller and are not always structured-cloneable:
+  // failing to forward one must not leave the port, and the buffered body
+  // behind it, alive.
+  const reason = new Error('aborted with an unclonable reason', { cause: { notCloneable: () => {} } })
+  const errored = Promise.withResolvers<void>()
+  interceptor.dispatch(
+    () => false,
+    { origin: 'http://non-cloneable.local', path: '/', method: 'GET', headers: {} } as any,
+    {
+      onResponseData (controller: any) {
+        controller.abort(reason)
+      },
+      onResponseError () {
+        errored.resolve()
+      }
+    }
+  )
+
+  const peer = await peerReady.promise
+  t.after(() => peer.close())
+  const [streamedRequest] = (await once(peer, 'message')) as Array<{ id: string }>
+
+  const source = new Readable({ read () {} })
+  source.push('never delivered')
+  source.on('error', () => {})
+  t.after(() => source.destroy())
+  const sourceClosed = requestWithTimeout(new Promise<void>(resolve => source.once('close', resolve)), 2000)
+  const transferable = MessagePortWritable.asTransferable(source)
+
+  peer.postMessage(
+    { type: Message.RESPONSE, id: streamedRequest.id, statusCode: 200, headers: {}, bodyPort: transferable.port },
+    transferable.transferList
+  )
+
+  await requestWithTimeout(errored.promise, 2000)
+  await sourceClosed
 })

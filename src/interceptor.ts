@@ -92,6 +92,7 @@ interface PendingRequest {
   onMessage: (value: unknown) => void
   pauseResponse?: () => void
   resumeResponse?: () => void
+  abortResponse?: (reason: Error) => void
 }
 
 interface Peer {
@@ -414,6 +415,7 @@ export class Interceptor {
         abort (reason: Error) {
           this.aborted = true
           this.reason = reason
+          pending.abortResponse?.(reason)
         },
         pause () {
           this.paused = true
@@ -1064,6 +1066,12 @@ export class Interceptor {
 
     const pending = peer.pending.get(message.id)
     if (!pending) {
+      // A response that arrives after its request timed out has no consumer:
+      // close its body port so the sending side can release buffered data.
+      if (message.type === Message.RESPONSE) {
+        const { bodyPort } = value as ResponseMessage
+        bodyPort?.close()
+      }
       return
     }
 
@@ -1097,6 +1105,7 @@ export class Interceptor {
 
     try {
       if (pending.controller.aborted) {
+        response.bodyPort?.close()
         pending.handler.onResponseError?.(pending.controller, pending.controller.reason as Error)
         pending.resolve()
         return
@@ -1110,11 +1119,13 @@ export class Interceptor {
       )
 
       if (pending.controller.aborted) {
+        response.bodyPort?.close()
         pending.handler.onResponseError?.(pending.controller, pending.controller.reason as Error)
         pending.resolve()
         return
       }
     } catch (error) {
+      response.bodyPort?.close()
       this.#publishRequestError(pending.request, pending.context, error as Error)
       pending.handler.onResponseError?.(pending.controller, error as Error)
       pending.resolve()
@@ -1125,6 +1136,11 @@ export class Interceptor {
       const body = new MessagePortReadable({ port: response.bodyPort })
       pending.pauseResponse = () => body.pause()
       pending.resumeResponse = () => body.resume()
+      pending.abortResponse = reason => {
+        // Tear down the body stream: this notifies the sending side and
+        // closes the port, so buffered data can be released.
+        body.destroy(reason)
+      }
 
       body.on('data', chunk => {
         try {
@@ -1138,6 +1154,10 @@ export class Interceptor {
       })
 
       body.on('end', () => {
+        // The body is complete: a later abort must not tear down a stream whose
+        // terminal event was already delivered.
+        pending.abortResponse = undefined
+
         try {
           pending.handler.onResponseEnd?.(pending.controller as any, {})
         } catch (error) {

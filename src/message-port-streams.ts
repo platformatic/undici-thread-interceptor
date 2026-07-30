@@ -8,6 +8,16 @@ interface StreamControl {
   err?: Error
 }
 
+function postControl (port: MessagePort, control: StreamControl): void {
+  try {
+    port.postMessage(control)
+  } catch {
+    // A destroy reason that cannot be structured-cloned must not prevent the
+    // teardown: the port is closed right after, and the other side reacts to
+    // that instead.
+  }
+}
+
 export class MessagePortWritable extends Writable {
   messagePort: MessagePort
   #callback: ((error?: Error | null) => void) | null
@@ -49,7 +59,7 @@ export class MessagePortWritable extends Writable {
 
   _destroy (err: Error | null, callback: (error?: Error | null) => void): void {
     if (!this.#otherSideDestroyed) {
-      this.messagePort.postMessage(err ? { err } : { fin: true })
+      postControl(this.messagePort, err ? { err } : { fin: true })
     }
 
     setImmediate(() => {
@@ -147,9 +157,9 @@ export class MessagePortDuplex extends Duplex {
   _destroy (err: Error | null, callback: (error?: Error | null) => void): void {
     if (!this.#otherSideDestroyed) {
       if (err) {
-        this.messagePort.postMessage({ err })
+        postControl(this.messagePort, { err })
       } else if (!this.#finSent) {
-        this.messagePort.postMessage({ fin: true })
+        postControl(this.messagePort, { fin: true })
       }
     }
 
@@ -198,7 +208,7 @@ export class MessagePortReadable extends Readable {
 
   _destroy (err: Error | null, callback: (error?: Error | null) => void): void {
     if (err && !this.#otherSideDestroyed) {
-      this.messagePort.postMessage({ err })
+      postControl(this.messagePort, { err })
     }
 
     setImmediate(() => {
