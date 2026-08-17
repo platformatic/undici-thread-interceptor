@@ -27,10 +27,11 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       - run: npm install npm -g
-      - run: npm install
       - name: Change version number and sync
         run: |
           node scripts/sync-version.mjs ${{ inputs.version }}
+      - run: npm install
+      - run: npm run build
       - name: GIT commit and push all changed files
         run: |
           git config --global user.name "mcollina"
