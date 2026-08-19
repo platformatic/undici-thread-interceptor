@@ -237,6 +237,18 @@ parentPort?.on('message', message => {
   if (message === 'close') {
     server.close().then(() => parentPort?.postMessage({ type: 'closed' }))
   }
+  if (message === 'close-and-exit') {
+    server.close().then(() => {
+      parentPort?.postMessage({ type: 'closed' })
+      parentPort?.close()
+    })
+  }
+  if (message === 'close-concurrent') {
+    const first = server.close()
+    const second = server.close()
+    parentPort?.postMessage({ type: 'close-promises', same: first === second })
+    Promise.all([first, second]).then(() => parentPort?.postMessage({ type: 'closed' }))
+  }
   if (message === 'replace-server') {
     server.replaceServer((_req: any, res: any) => {
       res.setHeader('content-type', 'application/json')

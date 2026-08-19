@@ -15,7 +15,8 @@ import {
   waitForMeshServerAddress,
   waitForMeshServerCount,
   waitForMeshOriginRemoved,
-  waitForMeshServers
+  waitForMeshServers,
+  requestWithTimeout
 } from './helper.ts'
 
 let directCounter = 0
@@ -166,6 +167,103 @@ test('server close drains in-flight requests and removes new routing targets', a
     strictEqual(statusCode, 200)
     deepStrictEqual(await body.json(), { delayed: true })
   }
+})
+
+test('server close releases direct peers and lets its worker exit', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'close-peer')
+  const worker = await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'close-peer.local',
+    diagnostics: true,
+    terminateOnCleanup: false
+  })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:close-peer.local', 1)
+
+  const { body } = await request('http://close-peer.local', { dispatcher: agent })
+  await body.text()
+
+  const exited = once(worker, 'exit')
+  worker.postMessage('close-and-exit')
+  await requestWithTimeout(exited, 1000)
+
+  strictEqual(worker.diagnostics.filter(event => event.channel === 'peer:disconnect').length, 1)
+})
+
+test('concurrent server close calls share completion and wait for active requests', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'close-concurrent')
+  const worker = await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'close-concurrent.local',
+    kind: 'graceful-close'
+  })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:close-concurrent.local', 1)
+
+  const responses = [
+    request('http://close-concurrent.local', { dispatcher: agent }),
+    request('http://close-concurrent.local', { dispatcher: agent }),
+    request('http://close-concurrent.local', { dispatcher: agent })
+  ]
+  while (true) {
+    const [message] = (await once(worker, 'message')) as Array<{ type?: string; count?: number }>
+    if (message.type === 'graceful-close-active' && message.count === 3) {
+      break
+    }
+  }
+
+  let closed = false
+  const closedMessage = new Promise<void>(resolve => {
+    worker.on('message', message => {
+      if ((message as { type?: string }).type === 'closed') {
+        closed = true
+        resolve()
+      }
+    })
+  })
+  worker.postMessage('close-concurrent')
+
+  const [{ same }] = (await once(worker, 'message')) as Array<{ same: boolean }>
+  strictEqual(same, true)
+  strictEqual(closed, false)
+
+  for (const response of responses) {
+    const { statusCode, body } = await response
+    strictEqual(statusCode, 200)
+    deepStrictEqual(await body.json(), { delayed: true })
+  }
+
+  await closedMessage
+})
+
+test('server rejects peers that arrive after close starts', async t => {
+  const id = directMeshId('late-peer')
+  const coordinator = createCoordinator({ meshId: id })
+  t.after(() => coordinator.destroy())
+  const server = createServer({
+    meshId: id,
+    serverId: 'server-1',
+    domain: 'late-peer.local',
+    server (_req: any, res: any) {
+      res.end('ok')
+    }
+  })
+  await server.ready
+  await server.close()
+
+  const channel = new MessageChannel()
+  const message = once(channel.port2, 'message')
+  const closed = once(channel.port2, 'close')
+  server.addPeer(channel.port1, 'late-interceptor')
+
+  const [{ type }] = (await message) as Array<{ type: string }>
+  strictEqual(type, Message.PEER_DISCONNECT)
+  await closed
+  channel.port2.close()
 })
 
 test('keeps routing when one worker exits and another serves the same origin', async t => {

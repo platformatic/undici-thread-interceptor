@@ -34,6 +34,7 @@ export async function createWorkerServer (
     paused?: boolean
     whoamiReturn503?: boolean
     diagnostics?: boolean
+    terminateOnCleanup?: boolean
     kind?: 'basic' | 'express' | 'koa' | 'server-hooks' | 'server-hook-arrays' | 'server-error-hooks' | 'graceful-close'
   }
 ): Promise<Worker & { hooks: string[]; diagnostics: Array<{ channel: string; message: any }> }> {
@@ -50,7 +51,9 @@ export async function createWorkerServer (
       )
     }
   })
-  t.after(() => worker.terminate())
+  if (options.terminateOnCleanup !== false) {
+    t.after(() => worker.terminate())
+  }
   await once(worker, 'message')
   return worker as Worker & { hooks: string[]; diagnostics: Array<{ channel: string; message: any }> }
 }

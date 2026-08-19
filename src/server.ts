@@ -78,6 +78,7 @@ export class Server {
   #onSocketsEmpty: (() => void) | null
   #closed: boolean
   #draining: boolean
+  #closePromise: Promise<void> | null
   #boundWorkerMessageListener: (value: unknown) => void
 
   constructor (options: ServerOptions) {
@@ -104,6 +105,7 @@ export class Server {
     this.#onSocketsEmpty = null
     this.#closed = false
     this.#draining = false
+    this.#closePromise = null
     this.#boundWorkerMessageListener = this.#onWorkerMessage.bind(this)
 
     const channel = new MessageChannel()
@@ -154,9 +156,9 @@ export class Server {
     this.#update()
   }
 
-  async close (): Promise<void> {
-    if (this.#closed) {
-      return
+  close (): Promise<void> {
+    if (this.#closePromise) {
+      return this.#closePromise
     }
 
     this.#closed = true
@@ -165,12 +167,8 @@ export class Server {
     this.#port.postMessage({ type: Message.SERVER_LEAVE, meshId: this.#options.meshId, serverId: this.serverId })
     this.#port.close()
 
-    await this.#queue.drained()
-    await Promise.allSettled(this.#activeRequests)
-    await this.#drainSockets()
-    this.#draining = false
-
-    process.off('workerMessage', this.#boundWorkerMessageListener)
+    this.#closePromise = this.#drainAndClose()
+    return this.#closePromise
   }
 
   replaceServer (server: any): void {
@@ -192,6 +190,15 @@ export class Server {
   }
 
   addPeer (port: MessagePort, interceptorId = 'unknown'): void {
+    if (this.#closed) {
+      try {
+        port.postMessage({ type: Message.PEER_DISCONNECT })
+      } finally {
+        port.close()
+      }
+      return
+    }
+
     if (this.#peers.has(port)) {
       return
     }
@@ -269,6 +276,39 @@ export class Server {
     this.#activeSockets.clear()
   }
 
+  #closePeers (): void {
+    for (const [port, interceptorId] of this.#peers) {
+      const diagnostics = this.#peerDiagnostics(interceptorId)
+      this.#peers.delete(port)
+
+      try {
+        port.postMessage({ type: Message.PEER_DISCONNECT })
+      } finally {
+        port.close()
+        if (channels.peerDisconnect.hasSubscribers) {
+          channels.peerDisconnect.publish(diagnostics)
+        }
+      }
+    }
+
+    this.#peers.clear()
+  }
+
+  async #drainAndClose (): Promise<void> {
+    try {
+      await this.#queue.drained()
+      await Promise.allSettled(this.#activeRequests)
+      await this.#drainSockets()
+    } finally {
+      try {
+        this.#closePeers()
+      } finally {
+        this.#draining = false
+        process.off('workerMessage', this.#boundWorkerMessageListener)
+      }
+    }
+  }
+
   #getMode (): MeshServer['mode'] {
     return typeof this.#server === 'string' || this.#server instanceof URL ? 'tcp' : 'thread'
   }
@@ -297,19 +337,15 @@ export class Server {
     const message = value as { type?: string }
 
     if (message.type === Message.PEER_DISCONNECT) {
-      /* c8 ignore next - else */
-      const interceptorId = this.#peers.get(port) ?? 'unknown'
+      const interceptorId = this.#peers.get(port)
+      if (!interceptorId) {
+        return
+      }
+
       this.#peers.delete(port)
 
       if (channels.peerDisconnect.hasSubscribers) {
-        channels.peerDisconnect.publish({
-          meshId: this.#options.meshId,
-          origin: this.#origin,
-          interceptorId,
-          serverId: this.serverId,
-          role: 'server',
-          threadId
-        })
+        channels.peerDisconnect.publish(this.#peerDiagnostics(interceptorId))
       }
 
       port.close()
@@ -328,6 +364,17 @@ export class Server {
     }
 
     this.#queue.push({ port, message: value as RequestMessage, rejected: this.#closed })
+  }
+
+  #peerDiagnostics (interceptorId: string): Record<string, unknown> {
+    return {
+      meshId: this.#options.meshId,
+      origin: this.#origin,
+      interceptorId,
+      serverId: this.serverId,
+      role: 'server',
+      threadId
+    }
   }
 
   #handleUpgrade (message: UpgradeMessage): void {
@@ -372,7 +419,9 @@ export class Server {
     }
 
     const req = buildFakeRequest(message.method, message.path, headers, socket)
-    const head = message.head ? Buffer.from(message.head.buffer, message.head.byteOffset, message.head.byteLength) : Buffer.alloc(0)
+    const head = message.head
+      ? Buffer.from(message.head.buffer, message.head.byteOffset, message.head.byteLength)
+      : Buffer.alloc(0)
 
     if (channels.serverUpgradeStart.hasSubscribers) {
       channels.serverUpgradeStart.publish({ ...this.#upgradeDiagnostics(message), request: req, server: this.#server })
@@ -405,14 +454,22 @@ export class Server {
 
     const target = this.#server
 
-    if (typeof target?.emit === 'function' && typeof target?.listenerCount === 'function' && target.listenerCount('upgrade') > 0) {
+    if (
+      typeof target?.emit === 'function' &&
+      typeof target?.listenerCount === 'function' &&
+      target.listenerCount('upgrade') > 0
+    ) {
       return (req, socket, head) => target.emit('upgrade', req, socket, head)
     }
 
     // Fastify exposes its http.Server (where @fastify/websocket listens) as .server.
     const inner = target?.server
 
-    if (typeof inner?.emit === 'function' && typeof inner?.listenerCount === 'function' && inner.listenerCount('upgrade') > 0) {
+    if (
+      typeof inner?.emit === 'function' &&
+      typeof inner?.listenerCount === 'function' &&
+      inner.listenerCount('upgrade') > 0
+    ) {
       return (req, socket, head) => inner.emit('upgrade', req, socket, head)
     }
 
