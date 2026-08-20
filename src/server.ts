@@ -21,6 +21,7 @@ import { createRequestQueue, type RequestQueue } from './request-queue.ts'
 import {
   createId,
   executeWithTimeout,
+  kTimeout,
   normalizeHooks,
   normalizeOrigin,
   runHooks,
@@ -58,6 +59,7 @@ interface QueuedRequest {
   port: MessagePort
   message: RequestMessage
   rejected: boolean
+  waitForDrain: boolean
 }
 
 export class Server {
@@ -72,6 +74,10 @@ export class Server {
   #metadata: unknown
   #state: State
   #peers: Map<MessagePort, string>
+  #peerDrainPromises: Map<MessagePort, Promise<void>>
+  #peerDrainResolvers: Map<MessagePort, () => void>
+  #peerDrainBoundaries: Map<MessagePort, number>
+  #pendingUpgrades: Array<UpgradeMessage>
   #queue: RequestQueue<QueuedRequest>
   #activeRequests: Set<Promise<void>>
   #activeSockets: Set<FakeSocket>
@@ -99,6 +105,10 @@ export class Server {
     this.#metadata = options.metadata
     this.#state = options.paused ? 'paused' : 'available'
     this.#peers = new Map()
+    this.#peerDrainPromises = new Map()
+    this.#peerDrainResolvers = new Map()
+    this.#peerDrainBoundaries = new Map()
+    this.#pendingUpgrades = []
     this.#queue = createRequestQueue(this.serverId, this.#processQueuedRequest.bind(this))
     this.#activeRequests = new Set()
     this.#activeSockets = new Set()
@@ -165,7 +175,6 @@ export class Server {
     this.#draining = true
     this.#state = 'closed'
     this.#port.postMessage({ type: Message.SERVER_LEAVE, meshId: this.#options.meshId, serverId: this.serverId })
-    this.#port.close()
 
     this.#closePromise = this.#drainAndClose()
     return this.#closePromise
@@ -220,6 +229,9 @@ export class Server {
         return
       }
       this.#peers.delete(port)
+      this.#peerDrainResolvers.get(port)?.()
+      this.#peerDrainPromises.delete(port)
+      this.#peerDrainResolvers.delete(port)
       if (channels.peerDisconnect.hasSubscribers) {
         channels.peerDisconnect.publish(diagnostics)
       }
@@ -296,6 +308,14 @@ export class Server {
 
   async #drainAndClose (): Promise<void> {
     try {
+      await this.#drainPeers()
+      for (const message of this.#pendingUpgrades.splice(0)) {
+        if (this.#isMessageRejected(message, this.#peerForMessage(message))) {
+          this.#rejectUpgradeInBand(message, 503, 'Service Unavailable')
+        } else {
+          this.#handleUpgrade(message)
+        }
+      }
       await this.#queue.drained()
       await Promise.allSettled(this.#activeRequests)
       await this.#drainSockets()
@@ -303,6 +323,7 @@ export class Server {
       try {
         this.#closePeers()
       } finally {
+        this.#port.close()
         this.#draining = false
         process.off('workerMessage', this.#boundWorkerMessageListener)
       }
@@ -352,10 +373,22 @@ export class Server {
       return
     }
 
+    if (message.type === Message.PEER_DRAIN_ACK) {
+      this.#peerDrainBoundaries.set(port, (value as { lastDispatchIndex?: number }).lastDispatchIndex ?? 0)
+      this.#peerDrainResolvers.get(port)?.()
+      this.#peerDrainResolvers.delete(port)
+      return
+    }
+
     if (message.type === Message.UPGRADE) {
       // Upgrades bypass the request queue: it exists for fairness of
       // short-lived work, and a long-lived connection would distort it.
-      this.#handleUpgrade(value as UpgradeMessage)
+      const upgrade = value as UpgradeMessage
+      if (this.#closed) {
+        this.#pendingUpgrades.push(upgrade)
+      } else {
+        this.#handleUpgrade(upgrade)
+      }
       return
     }
 
@@ -363,7 +396,54 @@ export class Server {
       return
     }
 
-    this.#queue.push({ port, message: value as RequestMessage, rejected: this.#closed })
+    this.#queue.push({
+      port,
+      message: value as RequestMessage,
+      rejected: this.#closed,
+      waitForDrain: this.#closed
+    })
+  }
+
+  async #drainPeers (): Promise<void> {
+    const waits: Promise<void>[] = []
+
+    for (const port of this.#peers.keys()) {
+      const { promise, resolve } = Promise.withResolvers<void>()
+      this.#peerDrainPromises.set(port, promise)
+      this.#peerDrainResolvers.set(port, resolve)
+      waits.push(promise)
+
+      try {
+        port.postMessage({ type: Message.PEER_DRAIN })
+      } catch {
+        resolve()
+      }
+    }
+
+    const result = await executeWithTimeout(Promise.all(waits), 1000)
+    if (result === kTimeout) {
+      for (const resolve of this.#peerDrainResolvers.values()) {
+        resolve()
+      }
+      this.#peerDrainResolvers.clear()
+    }
+  }
+
+  #peerForMessage (message: RequestMessage | UpgradeMessage): MessagePort | undefined {
+    for (const [port, interceptorId] of this.#peers) {
+      if (interceptorId === message.interceptorId) {
+        return port
+      }
+    }
+  }
+
+  #isMessageRejected (message: RequestMessage | UpgradeMessage, port: MessagePort | undefined): boolean {
+    if (!this.#closed) {
+      return false
+    }
+
+    const boundary = port ? this.#peerDrainBoundaries.get(port) : undefined
+    return boundary === undefined || message.dispatchIndex > boundary
   }
 
   #peerDiagnostics (interceptorId: string): Record<string, unknown> {
@@ -491,7 +571,12 @@ export class Server {
     socket.end(`HTTP/1.1 ${statusCode} ${statusMessage}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`)
   }
 
-  #processQueuedRequest ({ port, message, rejected }: QueuedRequest): void {
+  async #processQueuedRequest ({ port, message, rejected, waitForDrain }: QueuedRequest): Promise<void> {
+    if (waitForDrain) {
+      await this.#peerDrainPromises.get(port)
+    }
+
+    rejected = rejected || this.#isMessageRejected(message, port)
     const request = this.#handleRequest(port, message, rejected)
     this.#activeRequests.add(request)
 
@@ -502,6 +587,8 @@ export class Server {
       .finally(() => {
         this.#activeRequests.delete(request)
       })
+
+    await request
   }
 
   async #handleRequest (port: MessagePort, message: RequestMessage, rejected: boolean): Promise<void> {
