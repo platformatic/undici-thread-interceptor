@@ -33,6 +33,27 @@ interface Member {
   port: MessagePort
 }
 
+interface PendingOperation {
+  initiator?: MessagePort
+  recipients: Set<MessagePort>
+}
+
+const operationMessages: Set<string> = new Set([
+  Message.INTERCEPTOR_UPDATE,
+  Message.INTERCEPTOR_LEAVE,
+  Message.SERVER_UPDATE,
+  Message.SERVER_LEAVE,
+  Message.MESH_ACK
+])
+
+const operationNames: Record<string, string> = {
+  [Message.INTERCEPTOR_UPDATE]: 'Interceptor update',
+  [Message.INTERCEPTOR_LEAVE]: 'Interceptor leave',
+  [Message.SERVER_UPDATE]: 'Server update',
+  [Message.SERVER_LEAVE]: 'Server leave',
+  [Message.MESH_ACK]: 'Mesh acknowledgement'
+}
+
 const coordinators = new Map<string, Coordinator>()
 
 export class Coordinator {
@@ -42,6 +63,8 @@ export class Coordinator {
   #closed: boolean
   #destroyed: boolean
   #boundWorkerMessageListener: (value: unknown) => void
+  #pendingOperations: Map<string, PendingOperation>
+  #internalOperationId: number
 
   constructor (options: CoordinatorOptions) {
     if (coordinators.has(options.meshId)) {
@@ -56,6 +79,8 @@ export class Coordinator {
     this.#closed = false
     this.#destroyed = false
     this.#boundWorkerMessageListener = this.#onWorkerMessage.bind(this)
+    this.#pendingOperations = new Map()
+    this.#internalOperationId = 0
 
     process.on('workerMessage', this.#boundWorkerMessageListener)
   }
@@ -83,6 +108,7 @@ export class Coordinator {
     }
 
     this.#members.clear()
+    this.#pendingOperations.clear()
     this.#mesh = prepareMesh(this.#options.meshId)
   }
 
@@ -93,6 +119,7 @@ export class Coordinator {
 
     this.#closed = false
     this.#members.clear()
+    this.#pendingOperations.clear()
     this.#mesh = prepareMesh(this.#options.meshId)
   }
 
@@ -139,6 +166,12 @@ export class Coordinator {
   }
 
   connectMember (message: CoordinatorConnectMessage): void {
+    if (!message.operationId) {
+      this.#options.onError?.(new Error('Coordinator connect requires an operationId.'))
+      message.port.close()
+      return
+    }
+
     if (this.#closed) {
       message.port.close()
       return
@@ -174,17 +207,24 @@ export class Coordinator {
     message.port.on('close', () => this.#removeMember(member))
     message.port.start()
 
+    const operationId = message.operationId
+
     if (message.role === 'server') {
-      this.#upsertServer(member, {
-        metadata: message.metadata,
-        origin: message.server?.origin,
-        state: message.server?.state,
-        mode: message.server?.mode,
-        address: message.server?.address,
-        capabilities: message.server?.capabilities
-      })
+      this.#upsertServer(
+        member,
+        {
+          metadata: message.metadata,
+          origin: message.server?.origin,
+          state: message.server?.state,
+          mode: message.server?.mode,
+          address: message.server?.address,
+          capabilities: message.server?.capabilities
+        },
+        operationId,
+        message.port
+      )
     } else {
-      this.#upsertInterceptor(member, message.metadata)
+      this.#upsertInterceptor(member, message.metadata, operationId, message.port)
     }
   }
 
@@ -200,29 +240,45 @@ export class Coordinator {
     const message = value as { type?: string; [key: string]: unknown }
 
     try {
+      const operationId = operationMessages.has(message.type ?? '') ? this.#requireOperationId(message) : undefined
+
       switch (message.type) {
         case Message.INTERCEPTOR_UPDATE:
-          this.#upsertInterceptor(member, message.metadata)
+          this.#upsertInterceptor(member, message.metadata, operationId!, member.port)
           break
         case Message.INTERCEPTOR_LEAVE:
-          this.#removeInterceptor(member.id)
+          this.#removeInterceptor(member.id, operationId!, member.port)
           break
         case Message.SERVER_UPDATE:
-          this.#upsertServer(member, message)
+          this.#upsertServer(member, message, operationId!, member.port)
           break
         case Message.SERVER_LEAVE:
-          this.#removeServer(member.id)
+          this.#removeServer(member.id, operationId!, member.port)
           break
         case Message.GET_MESH:
           member.port.postMessage({ type: Message.MESH, mesh: this.#mesh })
           break
+        case Message.MESH_ACK:
+          this.#acknowledge(member.port, operationId!)
+          break
       }
     } catch (error) {
       this.#options.onError?.(error as Error)
+      if (typeof message.operationId === 'string' && message.operationId.length > 0) {
+        member.port.postMessage({ type: Message.OPERATION_ERROR, operationId: message.operationId, error })
+      }
     }
   }
 
-  #upsertInterceptor (member: Member, metadata: unknown): void {
+  #requireOperationId (message: { type?: string; operationId?: unknown }): string {
+    if (typeof message.operationId !== 'string' || message.operationId.length === 0) {
+      throw new Error(`${operationNames[message.type ?? ''] ?? 'Mesh operation'} requires an operationId.`)
+    }
+
+    return message.operationId
+  }
+
+  #upsertInterceptor (member: Member, metadata: unknown, operationId: string, initiator?: MessagePort): void {
     const interceptor: MeshInterceptor = {
       interceptorId: member.id,
       threadId: member.threadId,
@@ -237,10 +293,10 @@ export class Coordinator {
       this.#options.onInterceptorAvailable?.(interceptor)
     }
 
-    this.#publishMesh()
+    this.#publishMesh(operationId, initiator)
   }
 
-  #upsertServer (member: Member, message: Record<string, unknown>): void {
+  #upsertServer (member: Member, message: Record<string, unknown>, operationId: string, initiator?: MessagePort): void {
     const previous = this.#mesh.servers[member.id]
     /* c8 ignore next - else */
     const serverState = (message.state ?? previous?.state ?? 'available') as State
@@ -294,20 +350,25 @@ export class Coordinator {
     }
 
     this.#rebuildOrigins()
-    this.#publishMesh()
+    this.#publishMesh(operationId, initiator)
   }
 
   #removeMember (member: Member): void {
     this.#members.delete(member.port)
 
+    for (const [operationId, operation] of this.#pendingOperations) {
+      operation.recipients.delete(member.port)
+      this.#completeIfApplied(operationId)
+    }
+
     if (member.role === 'interceptor') {
-      this.#removeInterceptor(member.id)
+      this.#removeInterceptor(member.id, this.#nextInternalOperationId())
     } else {
-      this.#removeServer(member.id)
+      this.#removeServer(member.id, this.#nextInternalOperationId())
     }
   }
 
-  #removeInterceptor (interceptorId: string): void {
+  #removeInterceptor (interceptorId: string, operationId: string, initiator?: MessagePort): void {
     const interceptor = this.#mesh.interceptors[interceptorId]
 
     if (!interceptor) {
@@ -316,10 +377,10 @@ export class Coordinator {
 
     delete this.#mesh.interceptors[interceptorId]
     this.#options.onInterceptorClosed?.(interceptor)
-    this.#publishMesh()
+    this.#publishMesh(operationId, initiator, this.getMember('interceptor', interceptorId)?.port)
   }
 
-  #removeServer (serverId: string): void {
+  #removeServer (serverId: string, operationId: string, initiator?: MessagePort): void {
     const server = this.#mesh.servers[serverId]
 
     if (!server) {
@@ -329,7 +390,7 @@ export class Coordinator {
     delete this.#mesh.servers[serverId]
     this.#options.onServerClosed?.({ ...server, state: 'closed' })
     this.#rebuildOrigins()
-    this.#publishMesh()
+    this.#publishMesh(operationId, initiator)
   }
 
   #rebuildOrigins (): void {
@@ -341,13 +402,26 @@ export class Coordinator {
     }
   }
 
-  #publishMesh (): void {
+  #publishMesh (operationId: string, initiator?: MessagePort, excluded?: MessagePort): void {
     this.#mesh.version++
 
-    const message = { type: Message.MESH, mesh: this.#mesh }
+    const recipients = new Set<MessagePort>()
+    for (const member of this.#members.values()) {
+      if (member.role === 'interceptor' && member.port !== excluded) {
+        recipients.add(member.port)
+      }
+    }
+
+    this.#pendingOperations.set(operationId, { initiator, recipients })
+    const message = { type: Message.MESH, operationId, mesh: this.#mesh }
 
     for (const member of this.#members.values()) {
-      member.port.postMessage(message)
+      try {
+        member.port.postMessage(message)
+      } catch (error) {
+        recipients.delete(member.port)
+        this.#options.onError?.(error as Error)
+      }
     }
 
     const mesh = structuredClone(this.#mesh)
@@ -358,6 +432,44 @@ export class Coordinator {
 
     /* c8 ignore next - else */
     this.#options.onMesh?.(mesh)
+
+    this.#completeIfApplied(operationId)
+  }
+
+  #acknowledge (port: MessagePort, operationId: string): void {
+    const operation = this.#pendingOperations.get(operationId)
+    if (!operation) {
+      return
+    }
+
+    operation.recipients.delete(port)
+    this.#completeIfApplied(operationId)
+  }
+
+  #completeIfApplied (operationId: string): void {
+    const operation = this.#pendingOperations.get(operationId)
+    if (!operation || operation.recipients.size > 0) {
+      return
+    }
+
+    this.#pendingOperations.delete(operationId)
+    if (operation.initiator) {
+      setImmediate(() => {
+        try {
+          if (this.#members.get(operation.initiator!)?.role === 'server') {
+            operation.initiator?.postMessage({ type: Message.MESH, mesh: this.#mesh })
+          }
+          operation.initiator?.postMessage({ type: Message.MESH_APPLIED, operationId })
+        } catch (error) {
+          this.#options.onError?.(error as Error)
+        }
+      }).unref()
+    }
+  }
+
+  #nextInternalOperationId (): string {
+    this.#internalOperationId++
+    return `internal-${this.#internalOperationId}`
   }
 
   #onWorkerMessage (value: unknown) {

@@ -108,9 +108,11 @@ Creating a coordinator registers it process-wide by `meshId`. A second
 coordinator with the same ID throws. The coordinator installs a process
 `workerMessage` listener and starts with an empty mesh.
 
-Members connect by sending `COORDINATOR_CONNECT` with a transferred port. The
-coordinator validates the role and required identity fields, records the member,
-starts the port, and inserts its initial server or interceptor record.
+Members connect by sending `COORDINATOR_CONNECT` with a transferred port and a
+unique `operationId`. The coordinator validates the role and required identity
+fields, records the member, starts the port, and inserts its initial server or
+interceptor record. The operation completes only after relevant interceptors
+acknowledge the resulting snapshot.
 
 Member port closure removes membership. Server and interceptor removal rebuilds
 the origin index and publishes a new snapshot.
@@ -137,11 +139,13 @@ server, and exposes `ready` for registration completion. A server ID is
 generated when one is not provided.
 
 `pause()` and `resume()` update the advertised state and publish
-`SERVER_UPDATE`. Calls after close and redundant state changes are ignored.
+`SERVER_UPDATE`. Their promises resolve after mesh convergence. Calls after
+close and redundant state changes are ignored.
 
 `replaceServer()` replaces the thread-mode target and republishes its upgrade
 capability. A nullish replacement is ignored for TCP targets and rejected for
-thread targets. `updateMetadata()` republishes metadata.
+thread targets. `updateMetadata()` republishes metadata; both return convergence
+promises.
 
 Upgrade capability is advertised when any of the following is true:
 
@@ -193,6 +197,15 @@ The protocol constants are defined in `src/protocol.ts`.
 | `PAUSE`               | coordinator to server      | Requests server pause.                                             |
 | `RESUME`              | coordinator to server      | Requests server resume.                                            |
 | `CLOSE`               | coordinator to server      | Requests server shutdown.                                          |
+
+Mesh mutations carry a unique `operationId`. The coordinator snapshots the
+current interceptor ports when publishing `MESH { operationId, ...mesh }` and
+tracks acknowledgements independently for each operation. Interceptors install
+the snapshot before sending `MESH_ACK { operationId }`. The coordinator replies
+to the mutation initiator with `MESH_APPLIED { operationId }` after every
+snapshot recipient acknowledges, or with `OPERATION_ERROR { operationId, error }`
+when the mutation fails. An interceptor joining later is not added to an
+existing operation, and disconnected recipients are removed from pending sets.
 
 ### Peer messages
 
@@ -271,9 +284,9 @@ message `id` remains the request identity.
 
 When a server starts closing:
 
-1. It immediately marks itself closed and changes its advertised state.
-2. It sends `SERVER_LEAVE` so new target selection stops after mesh propagation.
-3. It keeps the coordinator port open.
+1. It sends `SERVER_LEAVE` while remaining operational.
+2. It waits for `MESH_APPLIED` so stale interceptors have converged.
+3. It marks itself closed and keeps the coordinator port open.
 4. It sends `PEER_DRAIN` to every connected peer.
 5. The interceptor marks that peer as draining and replies with its current
    `lastDispatchIndex`.
@@ -301,9 +314,10 @@ acknowledgement protocol.
 `Server.close()` is idempotent and concurrent callers receive the same promise.
 The close sequence is:
 
-1. Set `#closed`, `#draining`, and state `closed`.
-2. Publish `SERVER_LEAVE` without closing the coordinator port.
-3. Establish peer drain barriers.
+1. Publish `SERVER_LEAVE` without closing the coordinator port.
+2. Wait for mesh convergence while accepting requests from stale snapshots.
+3. Set `#closed`, `#draining`, and state `closed`.
+4. Establish peer drain barriers.
 4. Admit or reject pending upgrades using their dispatch boundaries.
 5. Wait for the request queue and active request handlers.
 6. Wait for established upgrade sockets up to `upgradeDrainTimeout`.

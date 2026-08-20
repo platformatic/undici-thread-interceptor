@@ -32,7 +32,8 @@ import {
   type PeerConnectMessage,
   type RequestMessage,
   type ResponseMessage,
-  type UpgradeMessage
+  type UpgradeMessage,
+  type OperationErrorMessage
 } from './protocol.ts'
 import {
   createId,
@@ -72,8 +73,8 @@ interface InterceptorHooks {
 export interface InterceptorFunction extends Dispatcher.DispatcherComposeInterceptor {
   interceptorId: string
   ready: Promise<void>
-  close: () => void
-  updateMetadata: (metadata: unknown) => void
+  close: () => Promise<void>
+  updateMetadata: (metadata: unknown) => Promise<void>
   getMesh: () => Mesh | null
   createUpgradeAgent: () => HttpAgent
 }
@@ -96,6 +97,7 @@ interface PendingRequest {
 }
 
 interface Peer {
+  serverId: string
   port: MessagePort
   pending: Map<string, PendingRequest>
   tunnels: Set<MessagePortDuplex>
@@ -201,6 +203,9 @@ export class Interceptor {
   #peers: Map<string, Peer>
   #requestId: () => string
   #closed: boolean
+  #operations: Map<string, { resolve: () => void; reject: (error: Error) => void }>
+  #closePromise: Promise<void> | null
+  #controlPortClosed: boolean
 
   constructor (options: InterceptorOptions) {
     this.#options = options
@@ -219,16 +224,27 @@ export class Interceptor {
     this.#peers = new Map()
     this.#requestId = hyperid()
     this.#closed = false
+    this.#operations = new Map()
+    this.#closePromise = null
+    this.#controlPortClosed = false
 
     const channel = new MessageChannel()
     this.#port = channel.port1
     this.#port.on('message', value => this.#onCoordinatorMessage(value))
+    this.#port.on('close', () => {
+      this.#controlPortClosed = true
+      for (const operation of this.#operations.values()) {
+        operation.resolve()
+      }
+      this.#operations.clear()
+    })
     this.#port.start()
 
     const coordinatorThreadId = options.coordinatorThreadId ?? 0
     const bootstrapTimeout = options.bootstrapTimeout ?? 100
     const connectMessage: CoordinatorConnectMessage = {
       type: Message.COORDINATOR_CONNECT,
+      operationId: '',
       meshId: options.meshId,
       role: 'interceptor' as const,
       threadId,
@@ -239,7 +255,13 @@ export class Interceptor {
       }
     }
 
-    this.ready = sendThreadMessage(coordinatorThreadId, connectMessage, [channel.port2], bootstrapTimeout)
+    const operation = this.#createOperation()
+    connectMessage.operationId = operation.operationId
+    const transport = sendThreadMessage(coordinatorThreadId, connectMessage, [channel.port2], bootstrapTimeout)
+    this.ready =
+      coordinatorThreadId === threadId && process.listenerCount('workerMessage') === 0
+        ? transport
+        : transport.then(() => operation.promise)
     this.ready.catch(error => runHooks(this.#hooks.onError, null, null, {}, error as Error))
   }
 
@@ -261,32 +283,45 @@ export class Interceptor {
     return this.#mesh
   }
 
-  close (): void {
+  close (): Promise<void> {
     if (this.#closed) {
-      return
+      return this.#closePromise ?? Promise.resolve()
     }
 
     this.#closed = true
+    const operation = this.#createOperation()
     this.#port.postMessage({
       type: Message.INTERCEPTOR_LEAVE,
+      operationId: operation.operationId,
       meshId: this.#options.meshId,
       interceptorId: this.interceptorId
     })
-    this.#port.close()
 
-    for (const peer of this.#peers.values()) {
-      peer.port.postMessage({ type: Message.PEER_DISCONNECT })
-      peer.port.close()
-    }
+    const convergence =
+      this.#controlPortClosed || process.listenerCount('workerMessage') === 0
+        ? Promise.race([operation.promise, new Promise<void>(resolve => setTimeout(resolve, this.#options.bootstrapTimeout ?? 100))])
+        : operation.promise
+    this.#closePromise = convergence.then(() => {
+      this.#port.close()
+
+      for (const peer of this.#peers.values()) {
+        peer.port.postMessage({ type: Message.PEER_DISCONNECT })
+        peer.port.close()
+      }
+    })
+    return this.#closePromise
   }
 
-  updateMetadata (metadata: unknown): void {
+  updateMetadata (metadata: unknown): Promise<void> {
+    const operation = this.#createOperation()
     this.#port.postMessage({
       type: Message.INTERCEPTOR_UPDATE,
+      operationId: operation.operationId,
       meshId: this.#options.meshId,
       interceptorId: this.interceptorId,
       metadata
     })
+    return operation.promise
   }
 
   dispatch (dispatch: Dispatch, opts: DispatchOptions, handler: DispatchHandler): boolean {
@@ -324,8 +359,27 @@ export class Interceptor {
     }
 
     if (server.mode === 'tcp') {
+      const current = this.#currentServer(server, key, Boolean(opts.upgrade))
+      if (!current) {
+        const replacement = this.#selectServer(key, this.#mesh?.origins[key]?.servers ?? [], request, context, Boolean(opts.upgrade))
+        if (!replacement) {
+          throw new NoAvailableTargetError(key)
+        }
+        if (replacement.mode === 'thread') {
+          this.#dispatchViaMessagePort(replacement, url, request, context, handler).catch(error => {
+            this.#publishRequestError(request, context, error as Error)
+            runHooks(this.#hooks.onError, request, null, context, error as Error)
+            handler.onResponseError?.(null as any, error as Error)
+          })
+          return true
+        }
+        return dispatch(
+          { ...request, origin: replacement.address } as DispatchOptions,
+          new HookHandler(handler, this.#hooks, request, context)
+        )
+      }
       return dispatch(
-        { ...request, origin: server.address } as DispatchOptions,
+        { ...request, origin: (current as Extract<MeshServer, { mode: 'tcp' }>).address } as DispatchOptions,
         new HookHandler(handler, this.#hooks, request, context)
       )
     }
@@ -354,7 +408,18 @@ export class Interceptor {
   }
 
   #onCoordinatorMessage (value: unknown): void {
-    const message = value as { type?: string; mesh?: Mesh }
+    const message = value as { type?: string; mesh?: Mesh; operationId?: string }
+
+    if (message.type === Message.MESH_APPLIED) {
+      this.#operations.get(message.operationId as string)?.resolve()
+      return
+    }
+
+    if (message.type === Message.OPERATION_ERROR) {
+      const operation = message as unknown as OperationErrorMessage
+      this.#operations.get(operation.operationId)?.reject(operation.error)
+      return
+    }
 
     /* c8 ignore next 3 - hard to test */
     if (message.type !== Message.MESH || !message.mesh) {
@@ -362,12 +427,45 @@ export class Interceptor {
     }
 
     /* c8 ignore next 3 - hard to test */
-    if (this.#mesh && message.mesh.version <= this.#mesh.version) {
+    if (!this.#mesh || message.mesh.version > this.#mesh.version) {
+      this.#retireStalePeers(this.#mesh, message.mesh)
+      this.#mesh = message.mesh
+      this.#cursors.clear()
+    }
+
+    if (message.operationId) {
+      this.#port.postMessage({ type: Message.MESH_ACK, operationId: message.operationId })
+    }
+  }
+
+  #createOperation (): { operationId: string; promise: Promise<void> } {
+    const operationId = createId()
+    const { promise, resolve, reject } = Promise.withResolvers<void>()
+    this.#operations.set(operationId, { resolve, reject })
+    promise.finally(() => this.#operations.delete(operationId)).catch(() => {})
+    return { operationId, promise }
+  }
+
+  #retireStalePeers (previous: Mesh | null, next: Mesh): void {
+    if (!previous) {
       return
     }
 
-    this.#mesh = message.mesh
-    this.#cursors.clear()
+    for (const [key, peer] of this.#peers) {
+      const before = previous.servers[peer.serverId]
+      const after = next.servers[peer.serverId]
+      const changed =
+        !after ||
+        !before ||
+        before.mode !== after.mode ||
+        (before.mode === 'thread' && after.mode === 'thread' && before.threadId !== after.threadId) ||
+        (before.mode === 'tcp' && after.mode === 'tcp' && before.address !== after.address)
+
+      if (changed) {
+        this.#peers.delete(key)
+        peer.draining = true
+      }
+    }
   }
 
   #selectServer (
@@ -404,6 +502,17 @@ export class Interceptor {
     handler: DispatchHandler
   ): Promise<void> {
     const peer = await this.#ensurePeerMessagePort(server)
+    const current = this.#currentServer(server, server.origin)
+    if (!current || current.mode !== 'thread') {
+      const replacement = this.#selectServer(server.origin, this.#mesh?.origins[server.origin]?.servers ?? [], request, context)
+      if (!replacement) {
+        throw new NoAvailableTargetError(server.origin)
+      }
+      if (replacement.mode === 'tcp') {
+        throw new Error('mesh target changed from thread to tcp during dispatch')
+      }
+      return this.#dispatchViaMessagePort(replacement, url, request, context, handler)
+    }
     const id = this.#requestId()
     const { promise: responsePromise, resolve, reject } = Promise.withResolvers<void>()
 
@@ -492,7 +601,24 @@ export class Interceptor {
     context: Record<PropertyKey, unknown>,
     handler: DispatchHandler
   ): Promise<void> {
+    const selected = this.#currentServer(server, server.origin, true)
+    if (!selected || selected.mode !== 'thread') {
+      const replacement = this.#selectServer(server.origin, this.#mesh?.origins[server.origin]?.servers ?? [], request, context, true)
+      if (!replacement || replacement.mode !== 'thread') {
+        throw new NoAvailableTargetError(server.origin)
+      }
+      return this.#dispatchUpgradeViaMessagePort(replacement, url, request, context, handler)
+    }
+
     const peer = await this.#ensurePeerMessagePort(server)
+    const current = this.#currentServer(server, server.origin, true)
+    if (!current || current.mode !== 'thread') {
+      const replacement = this.#selectServer(server.origin, this.#mesh?.origins[server.origin]?.servers ?? [], request, context, true)
+      if (!replacement || replacement.mode !== 'thread') {
+        throw new NoAvailableTargetError(server.origin)
+      }
+      return this.#dispatchUpgradeViaMessagePort(replacement, url, request, context, handler)
+    }
     const id = this.#requestId()
     const channel = new MessageChannel()
     const { promise, resolve, reject } = Promise.withResolvers<void>()
@@ -1020,6 +1146,7 @@ export class Interceptor {
     }
 
     const peer: Peer = {
+      serverId,
       port: channel.port1,
       pending: new Map(),
       tunnels: new Set(),
@@ -1033,6 +1160,9 @@ export class Interceptor {
     channel.port1.on('message', value => this.#onPeerMessage(peer, value))
     channel.port1.on('close', () => {
       peer.closed = true
+      if (this.#peers.get(key) === peer) {
+        this.#peers.delete(key)
+      }
 
       if (channels.peerDisconnect.hasSubscribers) {
         channels.peerDisconnect.publish(diagnostics)
@@ -1247,6 +1377,31 @@ export class Interceptor {
     }
 
     return true
+  }
+
+  #currentServer (
+    selected: MeshServer,
+    origin: string,
+    needsUpgrade = false
+  ): MeshServer | null {
+    const current = this.#mesh?.servers[selected.serverId]
+    if (!current || current.state !== 'available' || current.origin !== origin || current.mode !== selected.mode) {
+      return null
+    }
+
+    if (current.mode === 'thread' && selected.mode === 'thread' && current.threadId !== selected.threadId) {
+      return null
+    }
+
+    if (current.mode === 'tcp' && selected.mode === 'tcp' && current.address !== selected.address) {
+      return null
+    }
+
+    if (needsUpgrade && current.capabilities?.upgrade === false) {
+      return null
+    }
+
+    return current
   }
 
   #publishRequestError (request: any, context: Record<PropertyKey, unknown>, error: Error): void {

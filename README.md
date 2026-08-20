@@ -56,7 +56,7 @@ async function main () {
   console.log(await body.json())
 
   await worker.terminate()
-  interceptor.close()
+  await interceptor.close()
   coordinator.destroy()
 }
 
@@ -297,7 +297,7 @@ const server = createServer({
   metadata: { region: 'eu-west-1' }
 })
 
-server.updateMetadata({ region: 'eu-west-1', disabled: true })
+await server.updateMetadata({ region: 'eu-west-1', disabled: true })
 ```
 
 Interceptor target hooks can use server metadata for routing decisions.
@@ -307,16 +307,16 @@ Interceptor target hooks can use server metadata for routing decisions.
 Servers can be paused, resumed, replaced, and closed:
 
 ```js
-server.pause()
-server.resume()
-server.replaceServer(nextApp)
-server.updateMetadata(nextMetadata)
-server.close().catch(error => {
+await server.pause()
+await server.resume()
+await server.replaceServer(nextApp)
+await server.updateMetadata(nextMetadata)
+await server.close().catch(error => {
   throw error
 })
 ```
 
-Paused servers remain visible in mesh snapshots but are skipped by selection. Closing a server removes it from the mesh immediately, then drains queued and in-flight thread-mode requests.
+Paused servers remain visible in mesh snapshots but are skipped by selection. Lifecycle mutation methods resolve only after all relevant interceptors have installed the resulting mesh. Closing a server waits for leave propagation before starting peer draining, so requests selected using a stale snapshot remain admitted through the dispatch boundary.
 
 Interceptors expose lifecycle and mesh inspection helpers:
 
@@ -325,8 +325,8 @@ interceptor.ready
   .then(() => {
     console.log(interceptor.interceptorId)
     console.log(interceptor.getMesh())
-    interceptor.updateMetadata({ role: 'client' })
-    interceptor.close()
+    await interceptor.updateMetadata({ role: 'client' })
+    await interceptor.close()
   })
   .catch(error => {
     throw error
