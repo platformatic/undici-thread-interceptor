@@ -240,6 +240,47 @@ test('concurrent server close calls share completion and wait for active request
   await closedMessage
 })
 
+test('repeated close races drain queued and MessagePort-boundary requests', async t => {
+  for (let iteration = 0; iteration < 5; iteration++) {
+    const { meshId, coordinatorThreadId } = await createMesh(t, `close-race-${iteration}`)
+    const worker = await createWorkerServer(t, {
+      meshId,
+      coordinatorThreadId,
+      serverId: `server-${iteration}`,
+      domain: `close-race-${iteration}.local`,
+      kind: 'graceful-close'
+    })
+    const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+    await waitForMeshServers(interceptor, `http:close-race-${iteration}.local`, 1)
+
+    const responses = Array.from({ length: 32 }, () => request(`http://close-race-${iteration}.local`, { dispatcher: agent }))
+    while (true) {
+      const [message] = (await once(worker, 'message')) as Array<{ type?: string; count?: number }>
+      if (message.type === 'graceful-close-active') {
+        break
+      }
+    }
+
+    const closed = new Promise<void>(resolve => {
+      const onMessage = (message: { type?: string }): void => {
+        if (message.type === 'closed') {
+          worker.off('message', onMessage)
+          resolve()
+        }
+      }
+      worker.on('message', onMessage)
+    })
+    worker.postMessage('close')
+    const completed = await Promise.all(responses)
+    for (const response of completed) {
+      strictEqual(response.statusCode, 200)
+      deepStrictEqual(await response.body.json(), { delayed: true })
+    }
+
+    await closed
+  }
+})
+
 test('server rejects peers that arrive after close starts', async t => {
   const id = directMeshId('late-peer')
   const coordinator = createCoordinator({ meshId: id })
@@ -264,6 +305,50 @@ test('server rejects peers that arrive after close starts', async t => {
   strictEqual(type, Message.PEER_DISCONNECT)
   await closed
   channel.port2.close()
+})
+
+test('server answers a request delivered after close with shutdown response', async t => {
+  const id = directMeshId('late-request')
+  const coordinator = createCoordinator({ meshId: id })
+  t.after(() => coordinator.destroy())
+  const server = createServer({
+    meshId: id,
+    serverId: 'server-1',
+    domain: 'late-request.local',
+    server (_req: any, res: any) {
+      res.end('ok')
+    }
+  })
+  await server.ready
+
+  const channel = new MessageChannel()
+  server.addPeer(channel.port2, 'late-interceptor')
+  const response = new Promise<number>(resolve => {
+    const onMessage = (message: { statusCode?: number }): void => {
+      if (message.statusCode !== undefined) {
+        channel.port1.off('message', onMessage)
+        resolve(message.statusCode)
+      }
+    }
+    channel.port1.on('message', onMessage)
+  })
+  const close = server.close()
+  strictEqual(close, server.close())
+  channel.port1.postMessage({
+    type: Message.REQUEST,
+    id: 'late-request',
+    meshId: id,
+    interceptorId: 'late-interceptor',
+    origin: 'http:late-request.local',
+    path: '/',
+    method: 'GET',
+    headers: {},
+    sequence: 1
+  })
+
+  strictEqual(await response, 503)
+  await close
+  channel.port1.close()
 })
 
 test('keeps routing when one worker exits and another serves the same origin', async t => {

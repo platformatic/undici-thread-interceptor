@@ -101,6 +101,9 @@ interface Peer {
   tunnels: Set<MessagePortDuplex>
   closed: boolean
   diagnostics: PeerDiagnosticsPayload
+  // Highest dispatchIndex assigned to a message sent on this peer.
+  lastDispatchIndex: number
+  draining: boolean
 }
 
 interface UpgradeController {
@@ -444,6 +447,7 @@ export class Interceptor {
     const message: RequestMessage = {
       type: Message.REQUEST,
       id,
+      dispatchIndex: ++peer.lastDispatchIndex,
       meshId: this.#options.meshId,
       interceptorId: this.interceptorId,
       origin: server.origin,
@@ -707,6 +711,7 @@ export class Interceptor {
     const message: UpgradeMessage = {
       type: Message.UPGRADE,
       id,
+      dispatchIndex: ++peer.lastDispatchIndex,
       meshId: this.#options.meshId,
       interceptorId: this.interceptorId,
       origin: server.origin,
@@ -926,6 +931,7 @@ export class Interceptor {
     const message: UpgradeMessage = {
       type: Message.UPGRADE,
       id,
+      dispatchIndex: ++peer.lastDispatchIndex,
       meshId: this.#options.meshId,
       interceptorId: this.interceptorId,
       origin: server.origin,
@@ -975,8 +981,12 @@ export class Interceptor {
     const key = `${server.serverId}:${server.origin}`
     const existing = this.#peers.get(key)
 
-    if (existing && !existing.closed) {
+    if (existing && !existing.closed && !existing.draining) {
       return existing
+    }
+
+    if (existing?.draining) {
+      throw new Error('message port is draining')
     }
 
     if (this.#connectTimeout <= 0) {
@@ -1009,7 +1019,15 @@ export class Interceptor {
       threadId
     }
 
-    const peer: Peer = { port: channel.port1, pending: new Map(), tunnels: new Set(), closed: false, diagnostics }
+    const peer: Peer = {
+      port: channel.port1,
+      pending: new Map(),
+      tunnels: new Set(),
+      closed: false,
+      diagnostics,
+      lastDispatchIndex: 0,
+      draining: false
+    }
     this.#peers.set(key, peer)
 
     channel.port1.on('message', value => this.#onPeerMessage(peer, value))
@@ -1059,6 +1077,12 @@ export class Interceptor {
 
   #onPeerMessage (peer: Peer, value: unknown): void {
     const message = value as { type?: string; id?: string }
+
+    if (message.type === Message.PEER_DRAIN) {
+      peer.draining = true
+      peer.port.postMessage({ type: Message.PEER_DRAIN_ACK, lastDispatchIndex: peer.lastDispatchIndex })
+      return
+    }
 
     if (!message.id) {
       return

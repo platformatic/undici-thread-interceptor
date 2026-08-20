@@ -15,6 +15,8 @@ export const Message = {
   CLOSE: 'undici-thread-interceptor.close',
   PEER_CONNECT: 'undici-thread-interceptor.peer.connect',
   PEER_DISCONNECT: 'undici-thread-interceptor.peer.disconnect',
+  PEER_DRAIN: 'undici-thread-interceptor.peer.drain',
+  PEER_DRAIN_ACK: 'undici-thread-interceptor.peer.drain.ack',
   REQUEST: 'undici-thread-interceptor.request',
   RESPONSE: 'undici-thread-interceptor.response',
   UPGRADE: 'undici-thread-interceptor.upgrade',
@@ -104,6 +106,8 @@ export interface PeerConnectMessage {
 export interface RequestMessage {
   type: typeof Message.REQUEST
   id: string
+  // Monotonic per-peer order used to separate pre-drain dispatches from new ones.
+  dispatchIndex: number
   meshId: string
   interceptorId: string
   origin: string
@@ -128,6 +132,8 @@ export interface ResponseMessage {
 export interface UpgradeMessage {
   type: typeof Message.UPGRADE
   id: string
+  // Shares the request ordering space so upgrades participate in shutdown draining.
+  dispatchIndex: number
   meshId: string
   interceptorId: string
   origin: string
@@ -144,6 +150,12 @@ export interface UpgradeMessage {
   // Transferred port carrying the connection's raw bytes in both directions.
   // The handshake response travels in-band through this port as HTTP bytes.
   socketPort: MessagePort
+}
+
+export interface PeerDrainAckMessage {
+  type: typeof Message.PEER_DRAIN_ACK
+  // Highest dispatchIndex sent before this peer entered the draining state.
+  lastDispatchIndex: number
 }
 
 export interface ErrorMessage {
