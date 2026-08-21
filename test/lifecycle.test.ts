@@ -6,7 +6,7 @@ import { MessageChannel, threadId, type MessagePort } from 'node:worker_threads'
 import Fastify from 'fastify'
 import { Agent, request } from 'undici'
 
-import { Coordinator, createCoordinator, createInterceptor, createServer } from '../src/index.ts'
+import { Coordinator, createCoordinator, createInterceptor, createServer, TargetChangedError } from '../src/index.ts'
 import { Message, type CoordinatorConnectMessage, type State } from '../src/protocol.ts'
 import {
   createAgent,
@@ -665,6 +665,11 @@ test('coordinator rejects mesh mutations without operation IDs', async t => {
   strictEqual(coordinator.getMesh().servers['server-1'].state, 'available')
   deepStrictEqual(errors, [{ message: 'Server update requires an operationId.', code: 'UND_TI_OPERATION_ID_REQUIRED' }])
   channel.port2.close()
+})
+
+test('target changed errors expose a stable code', () => {
+  const error = new TargetChangedError()
+  strictEqual(error.code, 'UND_TI_TARGET_CHANGED')
 })
 
 test('coordinator rejects duplicate mesh ids and destroyed restarts', () => {
