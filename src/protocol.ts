@@ -118,6 +118,7 @@ export interface OperationErrorMessage {
   type: typeof Message.OPERATION_ERROR
   operationId: string
   error: Error
+  code?: string
 }
 
 export interface PeerConnectMessage {

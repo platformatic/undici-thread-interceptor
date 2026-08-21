@@ -14,7 +14,7 @@ import {
   publishRequestHeaders,
   type PeerDiagnosticsPayload
 } from './diagnostics.ts'
-import { ConnectTimeoutError, NoAvailableTargetError } from './errors.ts'
+import { ConnectTimeoutError, NoAvailableTargetError, TargetChangedError } from './errors.ts'
 import { FakeSocket } from './fake-socket.ts'
 import {
   HttpRequestHeadParser,
@@ -297,10 +297,9 @@ export class Interceptor {
       interceptorId: this.interceptorId
     })
 
-    const convergence =
-      this.#controlPortClosed || process.listenerCount('workerMessage') === 0
-        ? Promise.race([operation.promise, new Promise<void>(resolve => setTimeout(resolve, this.#options.bootstrapTimeout ?? 100))])
-        : operation.promise
+    const convergence = this.#controlPortClosed || process.listenerCount('workerMessage') === 0
+      ? Promise.resolve()
+      : operation.promise
     this.#closePromise = convergence.then(() => {
       this.#port.close()
 
@@ -417,7 +416,11 @@ export class Interceptor {
 
     if (message.type === Message.OPERATION_ERROR) {
       const operation = message as unknown as OperationErrorMessage
-      this.#operations.get(operation.operationId)?.reject(operation.error)
+      const error = operation.error as Error & { code?: string }
+      if (operation.code) {
+        error.code = operation.code
+      }
+      this.#operations.get(operation.operationId)?.reject(error)
       return
     }
 
@@ -509,7 +512,7 @@ export class Interceptor {
         throw new NoAvailableTargetError(server.origin)
       }
       if (replacement.mode === 'tcp') {
-        throw new Error('mesh target changed from thread to tcp during dispatch')
+        throw new TargetChangedError('Mesh target changed from thread to TCP during dispatch.')
       }
       return this.#dispatchViaMessagePort(replacement, url, request, context, handler)
     }

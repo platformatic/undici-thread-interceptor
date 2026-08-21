@@ -17,3 +17,13 @@ export class ConnectTimeoutError extends Error {
     this.code = 'UND_TI_CONNECT_TIMEOUT'
   }
 }
+
+export class TargetChangedError extends Error {
+  code: string
+
+  constructor (message = 'Mesh target changed during dispatch.') {
+    super(message)
+    this.name = 'TargetChangedError'
+    this.code = 'UND_TI_TARGET_CHANGED'
+  }
+}

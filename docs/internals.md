@@ -391,7 +391,13 @@ The public errors are:
 ```text
 NoAvailableTargetError  code: UND_TI_NO_AVAILABLE_TARGET
 ConnectTimeoutError     code: UND_TI_CONNECT_TIMEOUT
+TargetChangedError      code: UND_TI_TARGET_CHANGED
 ```
+
+Coordinator protocol validation errors use
+`UND_TI_OPERATION_ID_REQUIRED`. A coordinator restart with unsettled mesh
+operations emits a `UND_TI_PENDING_MESH_OPERATIONS` process warning instead of
+silently discarding those operations.
 
 `connectTimeout` applies to peer creation, normal thread-mode responses,
 Undici upgrade handshakes, and the upgrade-agent handshake path. A value of

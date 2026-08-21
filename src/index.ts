@@ -1,5 +1,5 @@
 export { Coordinator, createCoordinator, type CoordinatorOptions } from './coordinator.ts'
-export { ConnectTimeoutError, NoAvailableTargetError } from './errors.ts'
+export { ConnectTimeoutError, NoAvailableTargetError, TargetChangedError } from './errors.ts'
 export { createInterceptor, Interceptor, type InterceptorFunction, type InterceptorOptions } from './interceptor.ts'
 export type {
   Mesh,

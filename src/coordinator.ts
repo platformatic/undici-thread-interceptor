@@ -1,4 +1,5 @@
 import type { MessagePort } from 'node:worker_threads'
+import process from 'node:process'
 
 import { channels } from './diagnostics.ts'
 import {
@@ -119,6 +120,12 @@ export class Coordinator {
 
     this.#closed = false
     this.#members.clear()
+    if (this.#pendingOperations.size > 0) {
+      process.emitWarning(
+        `Restarting coordinator ${this.#options.meshId} with ${this.#pendingOperations.size} unsettled mesh operation(s).`,
+        { code: 'UND_TI_PENDING_MESH_OPERATIONS' }
+      )
+    }
     this.#pendingOperations.clear()
     this.#mesh = prepareMesh(this.#options.meshId)
   }
@@ -167,7 +174,7 @@ export class Coordinator {
 
   connectMember (message: CoordinatorConnectMessage): void {
     if (!message.operationId) {
-      this.#options.onError?.(new Error('Coordinator connect requires an operationId.'))
+      this.#options.onError?.(this.#operationIdError('Coordinator connect'))
       message.port.close()
       return
     }
@@ -265,17 +272,28 @@ export class Coordinator {
     } catch (error) {
       this.#options.onError?.(error as Error)
       if (typeof message.operationId === 'string' && message.operationId.length > 0) {
-        member.port.postMessage({ type: Message.OPERATION_ERROR, operationId: message.operationId, error })
+        member.port.postMessage({
+          type: Message.OPERATION_ERROR,
+          operationId: message.operationId,
+          error,
+          code: (error as Error & { code?: string }).code
+        })
       }
     }
   }
 
   #requireOperationId (message: { type?: string; operationId?: unknown }): string {
     if (typeof message.operationId !== 'string' || message.operationId.length === 0) {
-      throw new Error(`${operationNames[message.type ?? ''] ?? 'Mesh operation'} requires an operationId.`)
+      throw this.#operationIdError(operationNames[message.type ?? ''] ?? 'Mesh operation')
     }
 
     return message.operationId
+  }
+
+  #operationIdError (operation: string): Error & { code: string } {
+    const error = new Error(`${operation} requires an operationId.`) as Error & { code: string }
+    error.code = 'UND_TI_OPERATION_ID_REQUIRED'
+    return error
   }
 
   #upsertInterceptor (member: Member, metadata: unknown, operationId: string, initiator?: MessagePort): void {

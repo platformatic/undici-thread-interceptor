@@ -638,8 +638,8 @@ test('coordinator accepts interceptor updates and ignores invalid worker message
 
 test('coordinator rejects mesh mutations without operation IDs', async t => {
   const id = directMeshId('missing-operation-id')
-  const errors: string[] = []
-  const coordinator = createCoordinator({ meshId: id, onError: error => errors.push(error.message) })
+  const errors: Array<{ message: string; code?: string }> = []
+  const coordinator = createCoordinator({ meshId: id, onError: error => errors.push({ message: error.message, code: (error as Error & { code?: string }).code }) })
   t.after(() => coordinator.destroy())
 
   const channel = new MessageChannel()
@@ -663,7 +663,7 @@ test('coordinator rejects mesh mutations without operation IDs', async t => {
   await sleep(10)
 
   strictEqual(coordinator.getMesh().servers['server-1'].state, 'available')
-  deepStrictEqual(errors, ['Server update requires an operationId.'])
+  deepStrictEqual(errors, [{ message: 'Server update requires an operationId.', code: 'UND_TI_OPERATION_ID_REQUIRED' }])
   channel.port2.close()
 })
 

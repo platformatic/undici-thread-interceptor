@@ -198,10 +198,9 @@ export class Server {
       serverId: this.serverId
     })
 
-    const convergence =
-      this.#controlPortClosed || process.listenerCount('workerMessage') <= 1
-        ? Promise.race([operation.promise, new Promise<void>(resolve => setTimeout(resolve, this.#options.bootstrapTimeout ?? 100))])
-        : operation.promise
+    const convergence = this.#controlPortClosed || process.listenerCount('workerMessage') <= 1
+      ? Promise.resolve()
+      : operation.promise
     this.#closePromise = convergence.then(() => {
       this.#closed = true
       this.#draining = true
