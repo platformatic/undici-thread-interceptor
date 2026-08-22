@@ -6,7 +6,7 @@ import { MessageChannel, threadId, type MessagePort } from 'node:worker_threads'
 import Fastify from 'fastify'
 import { Agent, request } from 'undici'
 
-import { Coordinator, createCoordinator, createInterceptor, createServer } from '../src/index.ts'
+import { Coordinator, createCoordinator, createInterceptor, createServer, TargetChangedError } from '../src/index.ts'
 import { Message, type CoordinatorConnectMessage, type State } from '../src/protocol.ts'
 import {
   createAgent,
@@ -33,6 +33,7 @@ function connectServer (
   const channel = new MessageChannel()
   coordinator.connectMember({
     type: Message.COORDINATOR_CONNECT,
+    operationId: `connect-${id}`,
     meshId: coordinator.getMesh().meshId,
     role: 'server',
     threadId,
@@ -122,7 +123,7 @@ test('closes and re-adds a server for the same origin', async t => {
   await createWorkerServer(t, {
     meshId,
     coordinatorThreadId,
-    serverId: 'server-2',
+    serverId: 'server:2',
     domain: 'read.local',
     message: 'second'
   })
@@ -356,14 +357,14 @@ test('keeps routing when one worker exits and another serves the same origin', a
   const worker = await createWorkerServer(t, {
     meshId,
     coordinatorThreadId,
-    serverId: 'server-1',
+    serverId: 'server:1',
     domain: 'survive.local',
     message: 'gone'
   })
   await createWorkerServer(t, {
     meshId,
     coordinatorThreadId,
-    serverId: 'server-2',
+    serverId: 'server:2',
     domain: 'survive.local',
     message: 'survived'
   })
@@ -560,13 +561,13 @@ test('coordinator handles member validation and lifecycle edge messages', async 
     const [{ mesh }] = (await once(remote, 'message')) as Array<{ mesh: { meshId: string } }>
     strictEqual(mesh.meshId, id)
 
-    remote.postMessage({ type: Message.SERVER_UPDATE, state: 'paused' })
-    remote.postMessage({ type: Message.SERVER_UPDATE, state: 'available' })
-    remote.postMessage({ type: Message.SERVER_UPDATE, state: 'unavailable' })
-    remote.postMessage({ type: Message.SERVER_UPDATE, state: 'closed' })
-    remote.postMessage({ type: Message.SERVER_UPDATE, state: 'available' })
-    remote.postMessage({ type: Message.SERVER_UPDATE, state: 'unavailable' })
-    remote.postMessage({ type: Message.SERVER_UPDATE, state: 'unavailable' })
+    remote.postMessage({ type: Message.SERVER_UPDATE, operationId: 'server-update-1', state: 'paused' })
+    remote.postMessage({ type: Message.SERVER_UPDATE, operationId: 'server-update-2', state: 'available' })
+    remote.postMessage({ type: Message.SERVER_UPDATE, operationId: 'server-update-3', state: 'unavailable' })
+    remote.postMessage({ type: Message.SERVER_UPDATE, operationId: 'server-update-4', state: 'closed' })
+    remote.postMessage({ type: Message.SERVER_UPDATE, operationId: 'server-update-5', state: 'available' })
+    remote.postMessage({ type: Message.SERVER_UPDATE, operationId: 'server-update-6', state: 'unavailable' })
+    remote.postMessage({ type: Message.SERVER_UPDATE, operationId: 'server-update-7', state: 'unavailable' })
     await sleep(20)
 
     deepStrictEqual(events, [
@@ -579,14 +580,20 @@ test('coordinator handles member validation and lifecycle edge messages', async 
       'unavailable:server-1',
       'updated:server-1'
     ])
-    deepStrictEqual(errors, ['update failed'])
+    deepStrictEqual(errors, [
+      'Coordinator connect requires an operationId.',
+      'Coordinator connect requires an operationId.',
+      'Coordinator connect requires an operationId.',
+      'Coordinator connect requires an operationId.',
+      'update failed'
+    ])
 
     coordinator.close('missing')
     coordinator.close('server-1')
     coordinator.pause('missing')
     coordinator.resume('missing')
-    remote.postMessage({ type: Message.SERVER_LEAVE })
-    remote.postMessage({ type: Message.SERVER_LEAVE })
+    remote.postMessage({ type: Message.SERVER_LEAVE, operationId: 'server-leave-1' })
+    remote.postMessage({ type: Message.SERVER_LEAVE, operationId: 'server-leave-2' })
     await sleep(20)
     ok(events.includes('closed:server-1'))
     remote.close()
@@ -606,6 +613,7 @@ test('coordinator accepts interceptor updates and ignores invalid worker message
     const channel = new MessageChannel()
     process.emit('workerMessage', {
       type: Message.COORDINATOR_CONNECT,
+      operationId: 'interceptor-connect',
       meshId: id,
       role: 'interceptor',
       threadId,
@@ -614,9 +622,9 @@ test('coordinator accepts interceptor updates and ignores invalid worker message
     } as CoordinatorConnectMessage)
     await once(channel.port2, 'message')
 
-    channel.port2.postMessage({ type: Message.INTERCEPTOR_UPDATE, metadata: { updated: true } })
+    channel.port2.postMessage({ type: Message.INTERCEPTOR_UPDATE, operationId: 'interceptor-update', metadata: { updated: true } })
     await once(channel.port2, 'message')
-    channel.port2.postMessage({ type: Message.INTERCEPTOR_LEAVE })
+    channel.port2.postMessage({ type: Message.INTERCEPTOR_LEAVE, operationId: 'interceptor-leave' })
     await sleep(20)
 
     deepStrictEqual(coordinator.getMesh().interceptors, {})
@@ -626,6 +634,42 @@ test('coordinator accepts interceptor updates and ignores invalid worker message
   } finally {
     coordinator.destroy()
   }
+})
+
+test('coordinator rejects mesh mutations without operation IDs', async t => {
+  const id = directMeshId('missing-operation-id')
+  const errors: Array<{ message: string; code?: string }> = []
+  const coordinator = createCoordinator({ meshId: id, onError: error => errors.push({ message: error.message, code: (error as Error & { code?: string }).code }) })
+  t.after(() => coordinator.destroy())
+
+  const channel = new MessageChannel()
+  coordinator.connectMember({
+    type: Message.COORDINATOR_CONNECT,
+    operationId: 'server-connect',
+    meshId: id,
+    role: 'server',
+    threadId,
+    port: channel.port1,
+    server: {
+      id: 'server-1',
+      origin: 'http:missing-operation.local',
+      state: 'available',
+      mode: 'thread'
+    }
+  })
+  await once(channel.port2, 'message')
+
+  channel.port2.postMessage({ type: Message.SERVER_UPDATE, state: 'paused' })
+  await sleep(10)
+
+  strictEqual(coordinator.getMesh().servers['server-1'].state, 'available')
+  deepStrictEqual(errors, [{ message: 'Server update requires an operationId.', code: 'UND_TI_OPERATION_ID_REQUIRED' }])
+  channel.port2.close()
+})
+
+test('target changed errors expose a stable code', () => {
+  const error = new TargetChangedError()
+  strictEqual(error.code, 'UND_TI_TARGET_CHANGED')
 })
 
 test('coordinator rejects duplicate mesh ids and destroyed restarts', () => {
@@ -659,6 +703,7 @@ test('coordinator close is idempotent and rejects new members while closed', asy
   coordinator.close()
   coordinator.connectMember({
     type: Message.COORDINATOR_CONNECT,
+    operationId: 'closed-connect',
     meshId: id,
     role: 'server',
     threadId,
@@ -683,6 +728,7 @@ test('coordinator closes inconsistent connect messages', () => {
     let serverReads = 0
     const inconsistentServer = {
       type: Message.COORDINATOR_CONNECT,
+      operationId: 'inconsistent-server-connect',
       meshId: id,
       role: 'server',
       threadId,
@@ -699,6 +745,7 @@ test('coordinator closes inconsistent connect messages', () => {
     let interceptorReads = 0
     const inconsistentInterceptor = {
       type: Message.COORDINATOR_CONNECT,
+      operationId: 'inconsistent-interceptor-connect',
       meshId: id,
       role: 'interceptor',
       threadId,
@@ -766,4 +813,60 @@ test('server ignores redundant resume and updates metadata', async t => {
   await sleep(20)
   strictEqual(coordinator.getMesh().servers['server-1'].state, 'available')
   deepStrictEqual(coordinator.getMesh().servers['server-1'].metadata, { updated: true })
+})
+
+test('server readiness waits for interceptor mesh acknowledgement', async t => {
+  const id = directMeshId('ready-ack')
+  const coordinator = createCoordinator({ meshId: id })
+  t.after(() => coordinator.destroy())
+
+  const channel = new MessageChannel()
+  const received: Array<{ type?: string; operationId?: string }> = []
+  channel.port2.on('message', message => {
+    received.push(message as { type?: string; operationId?: string })
+  })
+  channel.port2.start()
+  coordinator.connectMember({
+    type: Message.COORDINATOR_CONNECT,
+    operationId: 'interceptor-join',
+    meshId: id,
+    role: 'interceptor',
+    threadId,
+    port: channel.port1,
+    interceptor: { id: 'interceptor-1' }
+  })
+
+  await sleep(10)
+  const initial = received.find(message => message.type === Message.MESH)
+  ok(initial?.operationId)
+  channel.port2.postMessage({ type: Message.MESH_ACK, operationId: initial.operationId })
+
+  const server = createServer({
+    meshId: id,
+    serverId: 'server-1',
+    domain: 'ready-ack.local',
+    server (_req: any, res: any) {
+      res.end('ok')
+    }
+  })
+  t.after(() => server.close())
+
+  let applied = false
+  server.ready.then(() => {
+    applied = true
+  })
+
+  for (let i = 0; i < 50 && received.length < 2; i++) {
+    await sleep(1)
+  }
+
+  strictEqual(applied, false)
+  for (const message of received) {
+    if (message.type === Message.MESH && message.operationId) {
+      channel.port2.postMessage({ type: Message.MESH_ACK, operationId: message.operationId })
+    }
+  }
+  await server.ready
+  strictEqual(applied, true)
+  channel.port2.close()
 })

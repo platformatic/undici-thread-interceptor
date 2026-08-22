@@ -15,7 +15,8 @@ import {
   type RequestMessage,
   type ResponseMessage,
   type State,
-  type UpgradeMessage
+  type UpgradeMessage,
+  type OperationErrorMessage
 } from './protocol.ts'
 import { createRequestQueue, type RequestQueue } from './request-queue.ts'
 import {
@@ -86,6 +87,8 @@ export class Server {
   #draining: boolean
   #closePromise: Promise<void> | null
   #boundWorkerMessageListener: (value: unknown) => void
+  #operations: Map<string, { resolve: () => void; reject: (error: Error) => void }>
+  #controlPortClosed: boolean
 
   constructor (options: ServerOptions) {
     if (options.domain.includes('://') || /^[a-z][a-z0-9+.-]*:/i.test(options.domain)) {
@@ -117,10 +120,19 @@ export class Server {
     this.#draining = false
     this.#closePromise = null
     this.#boundWorkerMessageListener = this.#onWorkerMessage.bind(this)
+    this.#operations = new Map()
+    this.#controlPortClosed = false
 
     const channel = new MessageChannel()
     this.#port = channel.port1
     this.#port.on('message', value => this.#onCoordinatorMessage(value))
+    this.#port.on('close', () => {
+      this.#controlPortClosed = true
+      for (const operation of this.#operations.values()) {
+        operation.resolve()
+      }
+      this.#operations.clear()
+    })
     this.#port.start()
 
     process.on('workerMessage', this.#boundWorkerMessageListener)
@@ -129,6 +141,7 @@ export class Server {
     const bootstrapTimeout = options.bootstrapTimeout ?? 100
     const connectMessage: CoordinatorConnectMessage = {
       type: Message.COORDINATOR_CONNECT,
+      operationId: '',
       meshId: options.meshId,
       role: 'server' as const,
       threadId,
@@ -144,26 +157,32 @@ export class Server {
       }
     }
 
-    this.ready = sendThreadMessage(coordinatorThreadId, connectMessage, [channel.port2], bootstrapTimeout)
+    const operation = this.#createOperation()
+    connectMessage.operationId = operation.operationId
+    const transport = sendThreadMessage(coordinatorThreadId, connectMessage, [channel.port2], bootstrapTimeout)
+    this.ready =
+      coordinatorThreadId === threadId && process.listenerCount('workerMessage') === 0
+        ? transport
+        : transport.then(() => operation.promise)
     this.ready.catch(error => runHooks(this.#hooks.onError, null, null, error as Error))
   }
 
-  pause (): void {
+  pause (): Promise<void> {
     if (this.#closed || this.#state === 'paused') {
-      return
+      return Promise.resolve()
     }
 
     this.#state = 'paused'
-    this.#update()
+    return this.#update()
   }
 
-  resume (): void {
+  resume (): Promise<void> {
     if (this.#closed || this.#state === 'available') {
-      return
+      return Promise.resolve()
     }
 
     this.#state = 'available'
-    this.#update()
+    return this.#update()
   }
 
   close (): Promise<void> {
@@ -171,31 +190,42 @@ export class Server {
       return this.#closePromise
     }
 
-    this.#closed = true
-    this.#draining = true
-    this.#state = 'closed'
-    this.#port.postMessage({ type: Message.SERVER_LEAVE, meshId: this.#options.meshId, serverId: this.serverId })
+    const operation = this.#createOperation()
+    this.#port.postMessage({
+      type: Message.SERVER_LEAVE,
+      operationId: operation.operationId,
+      meshId: this.#options.meshId,
+      serverId: this.serverId
+    })
 
-    this.#closePromise = this.#drainAndClose()
+    const convergence = this.#controlPortClosed || process.listenerCount('workerMessage') <= 1
+      ? Promise.resolve()
+      : operation.promise
+    this.#closePromise = convergence.then(() => {
+      this.#closed = true
+      this.#draining = true
+      this.#state = 'closed'
+      return this.#drainAndClose()
+    })
     return this.#closePromise
   }
 
-  replaceServer (server: any): void {
+  replaceServer (server: any): Promise<void> {
     if (server == null) {
       if (this.#getMode() === 'tcp') {
-        return
+        return Promise.resolve()
       }
 
       throw new Error('server argument is required')
     }
 
     this.#server = server
-    this.#update()
+    return this.#update()
   }
 
-  updateMetadata (metadata: unknown): void {
+  updateMetadata (metadata: unknown): Promise<void> {
     this.#metadata = metadata
-    this.#update()
+    return this.#update()
   }
 
   addPeer (port: MessagePort, interceptorId = 'unknown'): void {
@@ -243,9 +273,11 @@ export class Server {
     }
   }
 
-  #update (): void {
+  #update (): Promise<void> {
+    const operation = this.#createOperation()
     this.#port.postMessage({
       type: Message.SERVER_UPDATE,
+      operationId: operation.operationId,
       meshId: this.#options.meshId,
       serverId: this.serverId,
       origin: this.#origin,
@@ -255,6 +287,15 @@ export class Server {
       address: this.#getAddress(),
       capabilities: this.#getCapabilities()
     })
+    return operation.promise
+  }
+
+  #createOperation (): { operationId: string; promise: Promise<void> } {
+    const operationId = createId()
+    const { promise, resolve, reject } = Promise.withResolvers<void>()
+    this.#operations.set(operationId, { resolve, reject })
+    promise.finally(() => this.#operations.delete(operationId)).catch(() => {})
+    return { operationId, promise }
   }
 
   #getCapabilities (): { upgrade: boolean } {
@@ -351,6 +392,16 @@ export class Server {
       case Message.CLOSE:
         this.close().catch(error => runHooks(this.#hooks.onError, null, null, error as Error))
         break
+      case Message.MESH_APPLIED: {
+        const operation = this.#operations.get((message as { operationId: string }).operationId)
+        operation?.resolve()
+        break
+      }
+      case Message.OPERATION_ERROR: {
+        const operation = this.#operations.get((message as OperationErrorMessage).operationId)
+        operation?.reject((message as OperationErrorMessage).error)
+        break
+      }
     }
   }
 

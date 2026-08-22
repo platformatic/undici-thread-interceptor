@@ -10,6 +10,9 @@ export const Message = {
   SERVER_LEAVE: 'undici-thread-interceptor.server.leave',
   GET_MESH: 'undici-thread-interceptor.mesh.get',
   MESH: 'undici-thread-interceptor.mesh',
+  MESH_ACK: 'undici-thread-interceptor.mesh.ack',
+  MESH_APPLIED: 'undici-thread-interceptor.mesh.applied',
+  OPERATION_ERROR: 'undici-thread-interceptor.operation.error',
   PAUSE: 'undici-thread-interceptor.pause',
   RESUME: 'undici-thread-interceptor.resume',
   CLOSE: 'undici-thread-interceptor.close',
@@ -76,6 +79,7 @@ export interface Mesh {
 
 export interface CoordinatorConnectMessage {
   type: typeof Message.COORDINATOR_CONNECT
+  operationId: string
   meshId: string
   role: Role
   metadata?: unknown
@@ -92,6 +96,29 @@ export interface CoordinatorConnectMessage {
   }
   threadId: number
   port: MessagePort
+}
+
+export interface MeshMessage {
+  type: typeof Message.MESH
+  operationId?: string
+  mesh: Mesh
+}
+
+export interface MeshAckMessage {
+  type: typeof Message.MESH_ACK
+  operationId: string
+}
+
+export interface MeshAppliedMessage {
+  type: typeof Message.MESH_APPLIED
+  operationId: string
+}
+
+export interface OperationErrorMessage {
+  type: typeof Message.OPERATION_ERROR
+  operationId: string
+  error: Error
+  code?: string
 }
 
 export interface PeerConnectMessage {

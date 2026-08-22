@@ -392,6 +392,7 @@ test('interceptor ignores peer messages without matching pending requests', asyn
   const serverChannel = new MessageChannel()
   coordinator.connectMember({
     type: Message.COORDINATOR_CONNECT,
+    operationId: 'server-connect',
     meshId,
     role: 'server',
     threadId,
@@ -572,6 +573,7 @@ test('closes orphaned response body ports so the sender can release buffered dat
   const serverChannel = new MessageChannel()
   coordinator.connectMember({
     type: Message.COORDINATOR_CONNECT,
+    operationId: 'orphaned-server-connect',
     meshId,
     role: 'server',
     threadId,
