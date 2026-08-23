@@ -3,7 +3,7 @@
 // targets: interceptor.createUpgradeAgent() is a node:http Agent whose
 // connections parse the outgoing request head, convert it to an UPGRADE
 // message, and become a direct inter-thread pipe.
-import { deepStrictEqual, match, ok, strictEqual } from 'node:assert'
+import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert'
 import { once } from 'node:events'
 import { createServer as createHttpServer, get as httpGet, type Server as HttpServer } from 'node:http'
 import { test } from 'node:test'
@@ -13,7 +13,7 @@ import Fastify from 'fastify'
 import { WebSocket as UndiciWebSocket, type Dispatcher } from 'undici'
 import { WebSocket as WsClient, WebSocketServer } from 'ws'
 
-import { createInterceptor, createServer, type InterceptorFunction } from '../src/index.ts'
+import { createInterceptor, createServer, NoAvailableTargetError, type InterceptorFunction } from '../src/index.ts'
 import { createAgent, createMesh, waitForMeshServers, workerURL } from './helper.ts'
 
 async function createWebSocketWorker (
@@ -115,12 +115,21 @@ test('ws client binary payloads round-trip through the upgrade agent', async t =
   await closed
 })
 
-test('upgrade agent falls back to TCP for non-mesh hosts', async t => {
+test('upgrade agent falls back to TCP outside the configured domain', async t => {
   const { interceptor } = await setupMesh(t, 'ws-agent-fallback')
   const { port } = await listenWebSocketEcho(t)
 
   const ws = new WsClient(`ws://127.0.0.1:${port}/`, { agent: interceptor.createUpgradeAgent() })
   await wsEcho(t, ws)
+})
+
+test('upgrade agent rejects unknown targets within the configured domain', async t => {
+  const { interceptor } = await setupMesh(t, 'ws-agent-unknown-target')
+
+  throws(
+    () => new WsClient('ws://missing.local/', { agent: interceptor.createUpgradeAgent() }),
+    error => error instanceof NoAvailableTargetError && error.code === 'UND_TI_NO_AVAILABLE_TARGET'
+  )
 })
 
 test('upgrade agent routes ws clients to TCP mesh targets', async t => {

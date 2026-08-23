@@ -2,12 +2,20 @@ import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert'
 import { once } from 'node:events'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { MessageChannel, threadId, type MessagePort } from 'node:worker_threads'
+import { MessageChannel, threadId, Worker, type MessagePort } from 'node:worker_threads'
 import Fastify from 'fastify'
 import { Agent, request } from 'undici'
 
-import { Coordinator, createCoordinator, createInterceptor, createServer, TargetChangedError } from '../src/index.ts'
+import {
+  Coordinator,
+  createCoordinator,
+  createInterceptor,
+  createServer,
+  NoAvailableTargetError,
+  TargetChangedError
+} from '../src/index.ts'
 import { Message, type CoordinatorConnectMessage, type State } from '../src/protocol.ts'
+import { sendThreadMessage } from '../src/utils.ts'
 import {
   createAgent,
   createMesh,
@@ -16,7 +24,8 @@ import {
   waitForMeshServerCount,
   waitForMeshOriginRemoved,
   waitForMeshServers,
-  requestWithTimeout
+  requestWithTimeout,
+  workerURL
 } from './helper.ts'
 
 let directCounter = 0
@@ -440,6 +449,54 @@ test('ignores nullish replaceServer values for tcp servers', async t => {
 
   const { body } = await request('http://tcp-nullish-replace.local', { dispatcher: agent })
   deepStrictEqual(await body.json(), { hello: 'tcp' })
+})
+
+test('server close waits for active tcp requests', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'tcp-close-drain')
+  const started = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const app = Fastify()
+  app.get('/', async () => {
+    started.resolve()
+    await release.promise
+    return { hello: 'tcp' }
+  })
+  await app.listen({ port: 0 })
+  t.after(() => app.close())
+
+  const server = createServer({
+    meshId,
+    coordinatorThreadId,
+    serverId: 'tcp-1',
+    domain: 'tcp-close-drain.local',
+    server: app.listeningOrigin
+  })
+  t.after(() => server.close())
+  await server.ready
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:tcp-close-drain.local', 1)
+
+  const response = request('http://tcp-close-drain.local', { dispatcher: agent })
+  await started.promise
+
+  let closed = false
+  const closing = server.close().then(() => {
+    closed = true
+  })
+  await waitForMeshOriginRemoved(interceptor, 'http:tcp-close-drain.local')
+  await sleep(20)
+
+  strictEqual(closed, false)
+  await rejects(
+    request('http://tcp-close-drain.local', { dispatcher: agent }),
+    error => error instanceof NoAvailableTargetError
+  )
+
+  release.resolve()
+  const { body } = await response
+  deepStrictEqual(await body.json(), { hello: 'tcp' })
+  await closing
+  strictEqual(closed, true)
 })
 
 test('coordinator can close and restart with a fresh mesh', async t => {
@@ -869,4 +926,141 @@ test('server readiness waits for interceptor mesh acknowledgement', async t => {
   await server.ready
   strictEqual(applied, true)
   channel.port2.close()
+})
+
+test('worker server close waits for interceptor mesh acknowledgement', async t => {
+  const meshId = directMeshId('worker-close-ack')
+  const coordinator = createCoordinator({ meshId })
+  t.after(() => coordinator.destroy())
+
+  const channel = new MessageChannel()
+  channel.port2.start()
+  coordinator.connectMember({
+    type: Message.COORDINATOR_CONNECT,
+    operationId: 'interceptor-join',
+    meshId,
+    role: 'interceptor',
+    threadId,
+    port: channel.port1,
+    interceptor: { id: 'interceptor-1' }
+  })
+
+  const nextMesh = async (hasServer: boolean): Promise<{ operationId: string }> => {
+    while (true) {
+      const [message] = (await once(channel.port2, 'message')) as Array<{
+        type?: string
+        operationId?: string
+        mesh?: { servers: Record<string, unknown> }
+      }>
+      if (
+        message.type === Message.MESH &&
+        message.operationId &&
+        Boolean(message.mesh?.servers['server-1']) === hasServer
+      ) {
+        return { operationId: message.operationId }
+      }
+    }
+  }
+
+  const initial = await nextMesh(false)
+  channel.port2.postMessage({ type: Message.MESH_ACK, operationId: initial.operationId })
+
+  const worker = new Worker(workerURL('worker.ts'), {
+    workerData: {
+      meshId,
+      coordinatorThreadId: threadId,
+      serverId: 'server-1',
+      domain: 'worker-close-ack.local'
+    }
+  })
+  t.after(() => worker.terminate())
+
+  const available = await nextMesh(true)
+  channel.port2.postMessage({ type: Message.MESH_ACK, operationId: available.operationId })
+  await once(worker, 'message')
+
+  let closed = false
+  const closeMessage = once(worker, 'message').then(([message]) => {
+    closed = true
+    return message as { type?: string }
+  })
+  worker.postMessage('close')
+
+  const removed = await nextMesh(false)
+  await sleep(20)
+  strictEqual(closed, false)
+
+  channel.port2.postMessage({ type: Message.MESH_ACK, operationId: removed.operationId })
+  strictEqual((await closeMessage).type, 'closed')
+  channel.port2.close()
+})
+
+test('interceptor close waits for cross-worker mesh acknowledgement', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'interceptor-close-ack')
+  const channel = new MessageChannel()
+  t.after(() => channel.port1.close())
+
+  let holdAcknowledgement = false
+  let heldOperationId: string | undefined
+  const removalReceived = Promise.withResolvers<void>()
+  const initialReceived = Promise.withResolvers<void>()
+
+  channel.port1.on('message', message => {
+    const value = message as {
+      type?: string
+      operationId?: string
+      mesh?: { interceptors: Record<string, unknown> }
+    }
+    if (value.type !== Message.MESH || !value.operationId) {
+      return
+    }
+
+    if (holdAcknowledgement && !value.mesh?.interceptors['closing-interceptor']) {
+      heldOperationId = value.operationId
+      removalReceived.resolve()
+      return
+    }
+
+    channel.port1.postMessage({ type: Message.MESH_ACK, operationId: value.operationId })
+    initialReceived.resolve()
+  })
+  channel.port1.start()
+
+  await sendThreadMessage(
+    coordinatorThreadId,
+    {
+      type: Message.COORDINATOR_CONNECT,
+      operationId: 'manual-interceptor-join',
+      meshId,
+      role: 'interceptor',
+      threadId,
+      port: channel.port2,
+      interceptor: { id: 'manual-interceptor' }
+    },
+    [channel.port2]
+  )
+  await initialReceived.promise
+
+  const interceptor = createInterceptor({
+    meshId,
+    coordinatorThreadId,
+    interceptorId: 'closing-interceptor',
+    domain: '.local'
+  })
+  t.after(() => interceptor.close())
+  await interceptor.ready
+
+  holdAcknowledgement = true
+  let closed = false
+  const closing = interceptor.close().then(() => {
+    closed = true
+  })
+  await removalReceived.promise
+  await sleep(20)
+  strictEqual(closed, false)
+
+  ok(heldOperationId)
+  channel.port1.postMessage({ type: Message.MESH_ACK, operationId: heldOperationId })
+  await closing
+  strictEqual(closed, true)
 })

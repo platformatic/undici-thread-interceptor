@@ -126,17 +126,20 @@ class HookHandler {
   #request: DispatchOptions
   #context: Record<PropertyKey, unknown>
   #statusCode: number | undefined
+  #onComplete?: () => void
 
   constructor (
     handler: DispatchHandler,
     hooks: InterceptorHooks,
     request: DispatchOptions,
-    context: Record<PropertyKey, unknown>
+    context: Record<PropertyKey, unknown>,
+    onComplete?: () => void
   ) {
     this.#handler = handler
     this.#hooks = hooks
     this.#request = request
     this.#context = context
+    this.#onComplete = onComplete
   }
 
   onRequestStart (controller: any, context: any): void {
@@ -155,19 +158,47 @@ class HookHandler {
   }
 
   onResponseEnd (controller: any, trailers: any): void {
-    runHooks(this.#hooks.onResponseEnd, this.#request, { statusCode: this.#statusCode }, this.#context)
-    this.#handler.onResponseEnd?.(controller, trailers)
+    try {
+      runHooks(this.#hooks.onResponseEnd, this.#request, { statusCode: this.#statusCode }, this.#context)
+      this.#handler.onResponseEnd?.(controller, trailers)
+    } finally {
+      this.#onComplete?.()
+    }
   }
 
   onResponseError (controller: any, error: Error): void {
-    runHooks(this.#hooks.onError, this.#request, null, this.#context, error)
-    this.#handler.onResponseError?.(controller, error)
+    try {
+      runHooks(this.#hooks.onError, this.#request, null, this.#context, error)
+      this.#handler.onResponseError?.(controller, error)
+    } finally {
+      this.#onComplete?.()
+    }
   }
 
   onRequestUpgrade (controller: any, statusCode: number, headers: any, socket: any): void {
-    runHooks(this.#hooks.onResponse, this.#request, { statusCode, headers }, this.#context)
-    this.#handler.onRequestUpgrade?.(controller, statusCode, headers, socket)
+    try {
+      runHooks(this.#hooks.onResponse, this.#request, { statusCode, headers }, this.#context)
+      this.#handler.onRequestUpgrade?.(controller, statusCode, headers, socket)
+    } finally {
+      this.#onComplete?.()
+    }
   }
+}
+
+function toRawHeaders (headers: ResponseMessage['headers']): Buffer[] {
+  const rawHeaders: Buffer[] = []
+
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (value === undefined) {
+      continue
+    }
+
+    for (const entry of Array.isArray(value) ? value : [value]) {
+      rawHeaders.push(Buffer.from(name), Buffer.from(String(entry)))
+    }
+  }
+
+  return rawHeaders
 }
 
 function respondInBand (port: MessagePort, statusCode: number, statusMessage: string): void {
@@ -206,6 +237,8 @@ export class Interceptor {
   #operations: Map<string, { resolve: () => void; reject: (error: Error) => void }>
   #closePromise: Promise<void> | null
   #controlPortClosed: boolean
+  #activeTcpRequests: Map<string, Set<Promise<void>>>
+  #coordinatorAvailable: boolean
 
   constructor (options: InterceptorOptions) {
     this.#options = options
@@ -227,6 +260,7 @@ export class Interceptor {
     this.#operations = new Map()
     this.#closePromise = null
     this.#controlPortClosed = false
+    this.#activeTcpRequests = new Map()
 
     const channel = new MessageChannel()
     this.#port = channel.port1
@@ -258,10 +292,8 @@ export class Interceptor {
     const operation = this.#createOperation()
     connectMessage.operationId = operation.operationId
     const transport = sendThreadMessage(coordinatorThreadId, connectMessage, [channel.port2], bootstrapTimeout)
-    this.ready =
-      coordinatorThreadId === threadId && process.listenerCount('workerMessage') === 0
-        ? transport
-        : transport.then(() => operation.promise)
+    this.#coordinatorAvailable = coordinatorThreadId !== threadId || process.listenerCount('workerMessage') > 0
+    this.ready = this.#coordinatorAvailable ? transport.then(() => operation.promise) : transport
     this.ready.catch(error => runHooks(this.#hooks.onError, null, null, {}, error as Error))
   }
 
@@ -297,9 +329,7 @@ export class Interceptor {
       interceptorId: this.interceptorId
     })
 
-    const convergence = this.#controlPortClosed || process.listenerCount('workerMessage') === 0
-      ? Promise.resolve()
-      : operation.promise
+    const convergence = this.#controlPortClosed || !this.#coordinatorAvailable ? Promise.resolve() : operation.promise
     this.#closePromise = convergence.then(() => {
       this.#port.close()
 
@@ -338,7 +368,7 @@ export class Interceptor {
 
     const meshOrigin = this.#mesh?.origins[key]
     if (!meshOrigin) {
-      return dispatch(opts, handler)
+      throw new NoAvailableTargetError(key)
     }
 
     if (opts.method === 'CONNECT') {
@@ -372,14 +402,14 @@ export class Interceptor {
           })
           return true
         }
-        return dispatch(
-          { ...request, origin: replacement.address } as DispatchOptions,
-          new HookHandler(handler, this.#hooks, request, context)
-        )
+        return this.#dispatchViaTcp(dispatch, replacement, request, context, handler)
       }
-      return dispatch(
-        { ...request, origin: (current as Extract<MeshServer, { mode: 'tcp' }>).address } as DispatchOptions,
-        new HookHandler(handler, this.#hooks, request, context)
+      return this.#dispatchViaTcp(
+        dispatch,
+        current as Extract<MeshServer, { mode: 'tcp' }>,
+        request,
+        context,
+        handler
       )
     }
 
@@ -430,14 +460,86 @@ export class Interceptor {
     }
 
     /* c8 ignore next 3 - hard to test */
+    let tcpDrain: Promise<void> | undefined
     if (!this.#mesh || message.mesh.version > this.#mesh.version) {
+      tcpDrain = this.#captureTcpDrain(this.#mesh, message.mesh)
       this.#retireStalePeers(this.#mesh, message.mesh)
       this.#mesh = message.mesh
       this.#cursors.clear()
     }
 
     if (message.operationId) {
-      this.#port.postMessage({ type: Message.MESH_ACK, operationId: message.operationId })
+      const operationId = message.operationId
+      const acknowledge = tcpDrain ?? Promise.resolve()
+      acknowledge
+        .then(() => {
+          if (!this.#controlPortClosed) {
+            this.#port.postMessage({ type: Message.MESH_ACK, operationId })
+          }
+        })
+        .catch(error => runHooks(this.#hooks.onError, null, null, {}, error as Error))
+    }
+  }
+
+  #captureTcpDrain (previous: Mesh | null, next: Mesh): Promise<void> | undefined {
+    if (!previous) {
+      return
+    }
+
+    const requests: Promise<void>[] = []
+    for (const server of Object.values(previous.servers)) {
+      if (server.mode !== 'tcp') {
+        continue
+      }
+
+      const replacement = next.servers[server.serverId]
+      if (replacement?.mode === 'tcp' && replacement.address === server.address) {
+        continue
+      }
+
+      requests.push(...(this.#activeTcpRequests.get(server.serverId) ?? []))
+    }
+
+    return requests.length > 0 ? Promise.all(requests).then(() => {}) : undefined
+  }
+
+  #dispatchViaTcp (
+    dispatch: Dispatch,
+    server: Extract<MeshServer, { mode: 'tcp' }>,
+    request: DispatchOptions,
+    context: Record<PropertyKey, unknown>,
+    handler: DispatchHandler
+  ): boolean {
+    const { promise, resolve } = Promise.withResolvers<void>()
+    let requests = this.#activeTcpRequests.get(server.serverId)
+    if (!requests) {
+      requests = new Set()
+      this.#activeTcpRequests.set(server.serverId, requests)
+    }
+
+    requests.add(promise)
+    let completed = false
+    const complete = (): void => {
+      if (completed) {
+        return
+      }
+
+      completed = true
+      requests.delete(promise)
+      if (requests.size === 0) {
+        this.#activeTcpRequests.delete(server.serverId)
+      }
+      resolve()
+    }
+
+    try {
+      return dispatch(
+        { ...request, origin: server.address } as DispatchOptions,
+        new HookHandler(handler, this.#hooks, request, context, complete)
+      )
+    } catch (error) {
+      complete()
+      throw error
     }
   }
 
@@ -776,6 +878,8 @@ export class Interceptor {
             continue
           }
 
+          controller.rawHeaders = head.rawHeaders
+
           if (responseTimeout !== null) {
             clearTimeout(responseTimeout)
             responseTimeout = null
@@ -864,9 +968,9 @@ export class Interceptor {
    * A node:http Agent that routes HTTP upgrade requests for mesh domains
    * through the mesh. This makes node:http-based WebSocket clients — most
    * notably the ws package, and therefore @fastify/http-proxy's WebSocket
-   * proxying via wsClientOptions — work against mesh targets. Non-mesh
-   * hosts fall back to a real TCP connection, so the agent is safe to use
-   * for mixed upstreams.
+   * proxying via wsClientOptions — work against mesh targets. Hosts outside
+   * the configured domain fall back to a real TCP connection, so the agent
+   * is safe to use for mixed upstreams.
    */
   createUpgradeAgent (): HttpAgent {
     const agent = new HttpAgent({ keepAlive: false })
@@ -895,7 +999,7 @@ export class Interceptor {
     const key = normalizeOrigin(hostname)
 
     if (!this.#mesh?.origins[key]) {
-      return null
+      throw new NoAvailableTargetError(key)
     }
 
     const channel = new MessageChannel()
@@ -1257,6 +1361,7 @@ export class Interceptor {
   }
 
   #handleResponse (pending: PendingRequest, response: ResponseMessage): void {
+    pending.controller.rawHeaders = toRawHeaders(response.headers)
     publishRequestHeaders(pending.request, response, pending.context)
     runHooks(this.#hooks.onResponse, pending.request, response, pending.context)
 

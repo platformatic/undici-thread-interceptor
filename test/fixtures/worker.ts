@@ -95,6 +95,13 @@ function basicApp (req: any, res: any): void {
     return
   }
 
+  if (req.url === '/response-headers') {
+    res.setHeader('content-type', 'text/plain')
+    res.setHeader('set-cookie', ['a=1', 'b=2'])
+    res.end('headers')
+    return
+  }
+
   if (req.url === '/whoami') {
     if (workerData.whoamiReturn503) {
       res.statusCode = 503

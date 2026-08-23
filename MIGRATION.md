@@ -143,10 +143,10 @@ v2 separates interceptor suffix matching from server domain lookup.
 - Server domains must not include `http:`, `https:`, or `://`.
 - Domain matching is case-insensitive.
 - Requests outside the configured domain are delegated to the next Undici dispatcher.
-- Requests inside the domain but absent from the mesh are also delegated to Undici.
-- Requests for domains present in the mesh but without available targets fail with `NoAvailableTargetError`.
+- Requests inside the domain but absent from the mesh fail with `NoAvailableTargetError`.
+- Requests for domains present in the mesh but without available targets also fail with `NoAvailableTargetError`.
 
-This means DNS or the next dispatcher can still handle hosts that are not registered in the mesh.
+This makes the configured interceptor domain authoritative. DNS or the next dispatcher handles only hosts outside that domain.
 
 ## Target Availability
 
@@ -382,7 +382,7 @@ Public errors are:
 9. Convert server request hooks to notification-style `onRequest(req)`.
 10. Update custom Undici handlers to the Undici 8 lifecycle.
 11. Update imports and fixtures to ESM.
-12. Verify absent-domain delegation and no-target failures match your expectations.
+12. Verify outside-domain delegation and matching-domain no-target failures match your expectations.
 
 ## Example Migration
 

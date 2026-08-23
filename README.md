@@ -22,7 +22,7 @@ The v2 API has three explicit roles:
 - `createServer()` registers one server target for one domain.
 - `createInterceptor()` creates an Undici compose interceptor that routes matching requests through the mesh.
 
-A request is intercepted only when its hostname matches the configured domain suffix and the requested domain exists in the mesh. If no mesh entry exists, the request is delegated to the next Undici dispatcher. If the mesh entry exists but no target is available, the request fails with `NoAvailableTargetError`.
+A request is intercepted when its hostname matches the configured domain suffix. If no mesh entry or available target exists, the request fails with `NoAvailableTargetError`. Requests outside the configured suffix are delegated to the next Undici dispatcher.
 
 ## Basic Usage
 
@@ -316,7 +316,7 @@ await server.close().catch(error => {
 })
 ```
 
-Paused servers remain visible in mesh snapshots but are skipped by selection. Lifecycle mutation methods resolve only after all relevant interceptors have installed the resulting mesh. Closing a server waits for leave propagation before starting peer draining, so requests selected using a stale snapshot remain admitted through the dispatch boundary.
+Paused servers remain visible in mesh snapshots but are skipped by selection. Lifecycle mutation methods resolve only after all relevant interceptors have installed the resulting mesh. Closing a server waits for leave propagation before starting peer draining, so requests selected using a stale snapshot remain admitted through the dispatch boundary. For TCP targets, interceptors install the removal immediately but defer acknowledgement until requests active against the removed target have completed.
 
 Interceptors expose lifecycle and mesh inspection helpers:
 
@@ -455,7 +455,7 @@ TCP targets are dispatched through Undici directly and do not emit synthetic thr
 
 ## Errors
 
-- `NoAvailableTargetError` is thrown when a domain exists in the mesh but no available target can serve it — for upgrades, that includes meshes where no target advertises the upgrade capability.
+- `NoAvailableTargetError` is thrown when a matching domain is absent from the mesh or no available target can serve it — for upgrades, that includes meshes where no target advertises the upgrade capability.
 - `ConnectTimeoutError` is thrown when the interceptor times out waiting for a thread-mode response or a WebSocket handshake response, on both the dispatcher and `createUpgradeAgent()` paths.
 
 ## Migration
