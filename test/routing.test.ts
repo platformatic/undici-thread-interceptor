@@ -108,8 +108,11 @@ test('preserves repeated response headers for fetch', async t => {
   })
   const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
   await waitForMeshServers(interceptor, 'http:fetch-response-headers.local', 1)
+  const previous = getGlobalDispatcher()
+  setGlobalDispatcher(agent)
+  t.after(() => setGlobalDispatcher(previous))
 
-  const response = await fetch('http://fetch-response-headers.local/response-headers', { dispatcher: agent })
+  const response = await fetch('http://fetch-response-headers.local/response-headers')
 
   strictEqual(response.headers.get('content-type'), 'text/plain')
   deepStrictEqual(response.headers.getSetCookie(), ['a=1', 'b=2'])

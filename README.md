@@ -115,6 +115,8 @@ main().catch(error => {
 })
 ```
 
+On Node 22 and 24, Node's global `fetch()` does not support the per-request `dispatcher` option; use `setGlobalDispatcher()` as shown above instead.
+
 ## TCP Targets
 
 `createServer()` can register an HTTP address instead of an in-process server. The interceptor dispatches directly to the target address:
