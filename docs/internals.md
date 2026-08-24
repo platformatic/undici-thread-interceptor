@@ -163,11 +163,10 @@ The interceptor delegates to the next Undici dispatcher when:
 
 - The request has no origin.
 - The hostname does not match the configured domain suffix.
-- The normalized origin is absent from the mesh.
 
-If the origin exists but no target can be selected, it throws
-`NoAvailableTargetError`. `CONNECT` requests to mesh targets are rejected as
-unsupported.
+If the hostname matches the configured suffix but the normalized origin is
+absent or no target can be selected, it throws `NoAvailableTargetError`.
+`CONNECT` requests to mesh targets are rejected as unsupported.
 
 Selection uses a per-origin cursor. The first cursor is randomized; subsequent
 selection is round-robin. Only `available` servers are eligible. Upgrade
@@ -201,8 +200,10 @@ The protocol constants are defined in `src/protocol.ts`.
 Mesh mutations carry a unique `operationId`. The coordinator snapshots the
 current interceptor ports when publishing `MESH { operationId, ...mesh }` and
 tracks acknowledgements independently for each operation. Interceptors install
-the snapshot before sending `MESH_ACK { operationId }`. The coordinator replies
-to the mutation initiator with `MESH_APPLIED { operationId }` after every
+the snapshot before sending `MESH_ACK { operationId }`. When a TCP target is
+removed or replaced, each interceptor defers its acknowledgement until requests
+that were active against the old target at installation time have completed.
+The coordinator replies to the mutation initiator with `MESH_APPLIED { operationId }` after every
 snapshot recipient acknowledges, or with `OPERATION_ERROR { operationId, error }`
 when the mutation fails. An interceptor joining later is not added to an
 existing operation, and disconnected recipients are removed from pending sets.
@@ -285,7 +286,8 @@ message `id` remains the request identity.
 When a server starts closing:
 
 1. It sends `SERVER_LEAVE` while remaining operational.
-2. It waits for `MESH_APPLIED` so stale interceptors have converged.
+2. It waits for `MESH_APPLIED` so stale interceptors have converged and active
+   TCP requests have drained.
 3. It marks itself closed and keeps the coordinator port open.
 4. It sends `PEER_DRAIN` to every connected peer.
 5. The interceptor marks that peer as draining and replies with its current

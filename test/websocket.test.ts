@@ -197,7 +197,7 @@ test('websocket upgrade fails with NoAvailableTargetError when all targets are p
   )
 })
 
-test('websocket upgrades for absent domains are delegated to undici', async t => {
+test('websocket upgrades outside the configured domain are delegated to undici', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'ws-delegate')
   const { agent } = await createAgent(t, meshId, coordinatorThreadId)
   const { port } = await listenWebSocketEcho(t)

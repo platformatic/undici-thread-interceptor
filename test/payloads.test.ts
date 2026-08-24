@@ -42,6 +42,33 @@ test('handles responses without explicit headers', async t => {
   strictEqual(await body.text(), 'text')
 })
 
+test('returns raw response headers', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'raw-response-headers')
+  await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'raw-response-headers.local'
+  })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:raw-response-headers.local', 1)
+
+  const { headers, body } = await request('http://raw-response-headers.local/response-headers', {
+    dispatcher: agent,
+    responseHeaders: 'raw'
+  })
+
+  const rawHeaders = headers as unknown as string[]
+  const cookies: string[] = []
+  for (let i = 0; i < rawHeaders.length; i += 2) {
+    if (rawHeaders[i] === 'set-cookie') {
+      cookies.push(rawHeaders[i + 1])
+    }
+  }
+  deepStrictEqual(cookies, ['a=1', 'b=2'])
+  strictEqual(await body.text(), 'headers')
+})
+
 test('returns empty streamed responses', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'empty-stream')
   await createWorkerServer(t, { meshId, coordinatorThreadId, serverId: 'server-1', domain: 'empty-stream.local' })

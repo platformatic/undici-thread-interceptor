@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import Fastify from 'fastify'
 import { Agent, getGlobalDispatcher, request, setGlobalDispatcher } from 'undici'
 
-import { Interceptor, createCoordinator, createInterceptor, createServer } from '../src/index.ts'
+import { Interceptor, NoAvailableTargetError, createCoordinator, createInterceptor, createServer } from '../src/index.ts'
 import { createAgent, createMesh, createWorkerServer, waitForMeshServers } from './helper.ts'
 
 test('dispatches to a thread server', async t => {
@@ -69,11 +69,14 @@ test('treats configured domains case-insensitively', async t => {
   deepStrictEqual(await body.json(), { hello: 'world' })
 })
 
-test('delegates absent origins to undici', async t => {
+test('rejects absent origins within the configured domain', async t => {
   const { meshId, coordinatorThreadId } = await createMesh(t, 'absent')
   const { agent } = await createAgent(t, meshId, coordinatorThreadId)
 
-  await rejects(request('http://missing.local', { dispatcher: agent }))
+  await rejects(
+    request('http://missing.local', { dispatcher: agent }),
+    error => error instanceof NoAvailableTargetError && error.code === 'UND_TI_NO_AVAILABLE_TARGET'
+  )
 })
 
 test('supports fetch through a global dispatcher', async t => {
@@ -91,7 +94,29 @@ test('supports fetch through a global dispatcher', async t => {
   })
 
   strictEqual(response.status, 200)
+  strictEqual(response.headers.get('content-type'), 'text/plain')
   strictEqual(await response.text(), 'hello world')
+})
+
+test('preserves repeated response headers for fetch', async t => {
+  const { meshId, coordinatorThreadId } = await createMesh(t, 'fetch-response-headers')
+  await createWorkerServer(t, {
+    meshId,
+    coordinatorThreadId,
+    serverId: 'server-1',
+    domain: 'fetch-response-headers.local'
+  })
+  const { agent, interceptor } = await createAgent(t, meshId, coordinatorThreadId)
+  await waitForMeshServers(interceptor, 'http:fetch-response-headers.local', 1)
+  const previous = getGlobalDispatcher()
+  setGlobalDispatcher(agent)
+  t.after(() => setGlobalDispatcher(previous))
+
+  const response = await fetch('http://fetch-response-headers.local/response-headers')
+
+  strictEqual(response.headers.get('content-type'), 'text/plain')
+  deepStrictEqual(response.headers.getSetCookie(), ['a=1', 'b=2'])
+  strictEqual(await response.text(), 'headers')
 })
 
 test('supports same-thread coordinator server and interceptor', async t => {

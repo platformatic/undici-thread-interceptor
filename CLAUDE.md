@@ -54,7 +54,7 @@ This package provides a v2-only Undici interceptor that routes HTTP requests to 
 - Fixtures live under `test/fixtures/**`.
 - Fixtures and tests must use ESM imports, not `require()` or `createRequire()`.
 - Use root-relative test imports such as `../src/index.ts` from `test/*.test.ts` and `../../src/index.ts` from `test/fixtures/*.ts`.
-- Absent domains are delegated to Undici. Domains present in the mesh without available targets fail with `NoAvailableTargetError`.
+- Domains outside the configured suffix are delegated to Undici. Matching domains absent from the mesh or without available targets fail with `NoAvailableTargetError`.
 - Paused servers remain in the mesh but are skipped by target selection.
 - `Server.close()` removes the target from the mesh immediately, then drains queued and in-flight requests.
 - Same-thread coordinator/server/interceptor dispatch is supported through `sendThreadMessage()`.
