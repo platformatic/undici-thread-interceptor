@@ -74,6 +74,8 @@ export interface InterceptorFunction extends Dispatcher.DispatcherComposeInterce
   interceptorId: string
   ready: Promise<void>
   close: () => Promise<void>
+  ref: () => InterceptorFunction
+  unref: () => InterceptorFunction
   updateMetadata: (metadata: unknown) => Promise<void>
   getMesh: () => Mesh | null
   createUpgradeAgent: () => HttpAgent
@@ -239,6 +241,9 @@ export class Interceptor {
   #controlPortClosed: boolean
   #activeTcpRequests: Map<string, Set<Promise<void>>>
   #coordinatorAvailable: boolean
+  #referenced = true
+  #pendingDispatches = 0
+  #peerPorts = new Set<MessagePort>()
 
   constructor (options: InterceptorOptions) {
     this.#options = options
@@ -305,6 +310,14 @@ export class Interceptor {
     fn.interceptorId = this.interceptorId
     fn.ready = this.ready
     fn.close = this.close.bind(this)
+    fn.ref = () => {
+      this.ref()
+      return fn
+    }
+    fn.unref = () => {
+      this.unref()
+      return fn
+    }
     fn.updateMetadata = this.updateMetadata.bind(this)
     fn.getMesh = this.getMesh.bind(this)
     fn.createUpgradeAgent = this.createUpgradeAgent.bind(this)
@@ -313,6 +326,39 @@ export class Interceptor {
 
   getMesh (): Mesh | null {
     return this.#mesh
+  }
+
+  ref (): this {
+    this.#referenced = true
+    this.#updateRef()
+    return this
+  }
+
+  unref (): this {
+    this.#referenced = false
+    this.#updateRef()
+    return this
+  }
+
+  #updateRef (): void {
+    // The control port owns the reference for pending work, including TCP mesh convergence.
+    const active = this.#referenced || this.#pendingDispatches > 0 || this.#operations.size > 0 ||
+      this.#activeTcpRequests.size > 0 || this.#closePromise !== null
+    this.#port[active ? 'ref' : 'unref']()
+    for (const port of this.#peerPorts) {
+      port[this.#referenced ? 'ref' : 'unref']()
+    }
+  }
+
+  async #withRef (operation: () => Promise<void>): Promise<void> {
+    this.#pendingDispatches++
+    this.#updateRef()
+    try {
+      await operation()
+    } finally {
+      this.#pendingDispatches--
+      this.#updateRef()
+    }
   }
 
   close (): Promise<void> {
@@ -395,7 +441,7 @@ export class Interceptor {
           throw new NoAvailableTargetError(key)
         }
         if (replacement.mode === 'thread') {
-          this.#dispatchViaMessagePort(replacement, url, request, context, handler).catch(error => {
+          this.#withRef(() => this.#dispatchViaMessagePort(replacement, url, request, context, handler)).catch(error => {
             this.#publishRequestError(request, context, error as Error)
             runHooks(this.#hooks.onError, request, null, context, error as Error)
             handler.onResponseError?.(null as any, error as Error)
@@ -414,7 +460,7 @@ export class Interceptor {
     }
 
     if (opts.upgrade) {
-      this.#dispatchUpgradeViaMessagePort(server, url, request, context, handler).catch(error => {
+      this.#withRef(() => this.#dispatchUpgradeViaMessagePort(server, url, request, context, handler)).catch(error => {
         this.#publishRequestError(request, context, error as Error)
         runHooks(this.#hooks.onError, request, null, context, error as Error)
         handler.onResponseError?.(null as any, error as Error)
@@ -427,7 +473,7 @@ export class Interceptor {
       channels.requestCreate.publish({ request: getWrappedRequest(request, context) })
     }
 
-    this.#dispatchViaMessagePort(server, url, request, context, handler).catch(error => {
+    this.#withRef(() => this.#dispatchViaMessagePort(server, url, request, context, handler)).catch(error => {
       this.#publishRequestError(request, context, error as Error)
       runHooks(this.#hooks.onError, request, null, context, error as Error)
       handler.onResponseError?.(null as any, error as Error)
@@ -518,6 +564,7 @@ export class Interceptor {
     }
 
     requests.add(promise)
+    this.#updateRef()
     let completed = false
     const complete = (): void => {
       if (completed) {
@@ -529,6 +576,7 @@ export class Interceptor {
       if (requests.size === 0) {
         this.#activeTcpRequests.delete(server.serverId)
       }
+      this.#updateRef()
       resolve()
     }
 
@@ -547,7 +595,11 @@ export class Interceptor {
     const operationId = createId()
     const { promise, resolve, reject } = Promise.withResolvers<void>()
     this.#operations.set(operationId, { resolve, reject })
-    promise.finally(() => this.#operations.delete(operationId)).catch(() => {})
+    this.#updateRef()
+    promise.finally(() => {
+      this.#operations.delete(operationId)
+      this.#updateRef()
+    }).catch(() => {})
     return { operationId, promise }
   }
 
@@ -1263,9 +1315,12 @@ export class Interceptor {
       draining: false
     }
     this.#peers.set(key, peer)
+    // Retired peers can outlive their routing entry while existing requests finish.
+    this.#peerPorts.add(channel.port1)
 
     channel.port1.on('message', value => this.#onPeerMessage(peer, value))
     channel.port1.on('close', () => {
+      this.#peerPorts.delete(channel.port1)
       peer.closed = true
       if (this.#peers.get(key) === peer) {
         this.#peers.delete(key)
@@ -1288,6 +1343,7 @@ export class Interceptor {
       peer.tunnels.clear()
     })
     channel.port1.start()
+    this.#updateRef()
 
     const connectMessage: PeerConnectMessage = {
       type: Message.PEER_CONNECT,
