@@ -113,7 +113,7 @@ export class Server {
     this.#peerDrainResolvers = new Map()
     this.#peerDrainBoundaries = new Map()
     this.#pendingUpgrades = []
-    this.#queue = createRequestQueue(this.serverId, this.#processQueuedRequest.bind(this))
+    this.#queue = createRequestQueue(this.serverId, this.#processQueuedRequest.bind(this), () => this.#updateRef())
     this.#activeRequests = new Set()
     this.#activeSockets = new Set()
     this.#onSocketsEmpty = null
@@ -479,7 +479,6 @@ export class Server {
       waitForDrain: this.#closed
     })
     this.#updateRef()
-    this.#queue.drained()?.then(() => this.#updateRef())
   }
 
   async #drainPeers (): Promise<void> {

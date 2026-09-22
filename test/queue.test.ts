@@ -136,6 +136,28 @@ test('reports queue size while draining and covers utility edge branches', async
   await failingQueue.drained()
 })
 
+test('notifies drain without a drained promise and supports subsequent batches', async () => {
+  let notification = Promise.withResolvers<void>()
+  let drains = 0
+  const queue = createRequestQueue('drain-notification', () => {}, () => {
+    strictEqual(queue.size(), 0)
+    drains++
+    notification.resolve()
+  })
+
+  queue.push(undefined)
+  queue.push(undefined)
+  await notification.promise
+  strictEqual(drains, 1)
+
+  notification = Promise.withResolvers<void>()
+  queue.push(undefined)
+  const drained = queue.drained()
+  await notification.promise
+  await drained
+  strictEqual(drains, 2)
+})
+
 test('emits a warning when queue processing fails outside the callback', async t => {
   const descriptor = Object.getOwnPropertyDescriptor(performance.nodeTiming, 'uvMetricsInfo')
   t.after(() => {

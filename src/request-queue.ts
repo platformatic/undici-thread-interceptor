@@ -11,7 +11,11 @@ export interface RequestQueue<T> {
   drained: () => Promise<void> | undefined
 }
 
-export function createRequestQueue<T> (id: string, callback: (item: T) => void | Promise<void>): RequestQueue<T> {
+export function createRequestQueue<T> (
+  id: string,
+  callback: (item: T) => void | Promise<void>,
+  onDrain?: () => void
+): RequestQueue<T> {
   let lastLoop = 0
   let pipelining = 0
   let drainedPromise: Promise<void> | undefined
@@ -64,6 +68,7 @@ export function createRequestQueue<T> (id: string, callback: (item: T) => void |
       drainedPromise = undefined
       resolveDrained = undefined
     }
+    onDrain?.()
   }
 
   return {
