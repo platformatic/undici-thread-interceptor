@@ -1,6 +1,7 @@
 {
   "extends": "@platformatic/tsconfig",
   "compilerOptions": {
+    "declaration": true,
     "outDir": "./dist",
     "rootDir": "./src"
   },

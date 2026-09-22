@@ -89,6 +89,7 @@ export class Server {
   #boundWorkerMessageListener: (value: unknown) => void
   #operations: Map<string, { resolve: () => void; reject: (error: Error) => void }>
   #controlPortClosed: boolean
+  #referenced = true
 
   constructor (options: ServerOptions) {
     if (options.domain.includes('://') || /^[a-z][a-z0-9+.-]*:/i.test(options.domain)) {
@@ -112,7 +113,7 @@ export class Server {
     this.#peerDrainResolvers = new Map()
     this.#peerDrainBoundaries = new Map()
     this.#pendingUpgrades = []
-    this.#queue = createRequestQueue(this.serverId, this.#processQueuedRequest.bind(this))
+    this.#queue = createRequestQueue(this.serverId, this.#processQueuedRequest.bind(this), () => this.#updateRef())
     this.#activeRequests = new Set()
     this.#activeSockets = new Set()
     this.#onSocketsEmpty = null
@@ -165,6 +166,27 @@ export class Server {
         ? transport
         : transport.then(() => operation.promise)
     this.ready.catch(error => runHooks(this.#hooks.onError, null, null, error as Error))
+  }
+
+  ref (): this {
+    this.#referenced = true
+    this.#updateRef()
+    return this
+  }
+
+  unref (): this {
+    this.#referenced = false
+    this.#updateRef()
+    return this
+  }
+
+  #updateRef (): void {
+    // Queued requests and coordinator operations must finish even on an unreferenced server.
+    const active = this.#referenced || this.#operations.size > 0 || this.#queue.size() > 0 || this.#closePromise !== null
+    this.#port[active ? 'ref' : 'unref']()
+    for (const port of this.#peers.keys()) {
+      port[this.#referenced ? 'ref' : 'unref']()
+    }
   }
 
   pause (): Promise<void> {
@@ -265,6 +287,7 @@ export class Server {
       }
     })
     port.start()
+    this.#updateRef()
 
     if (channels.peerConnect.hasSubscribers) {
       channels.peerConnect.publish(diagnostics)
@@ -292,7 +315,11 @@ export class Server {
     const operationId = createId()
     const { promise, resolve, reject } = Promise.withResolvers<void>()
     this.#operations.set(operationId, { resolve, reject })
-    promise.finally(() => this.#operations.delete(operationId)).catch(() => {})
+    this.#updateRef()
+    promise.finally(() => {
+      this.#operations.delete(operationId)
+      this.#updateRef()
+    }).catch(() => {})
     return { operationId, promise }
   }
 
@@ -451,6 +478,7 @@ export class Server {
       rejected: this.#closed,
       waitForDrain: this.#closed
     })
+    this.#updateRef()
   }
 
   async #drainPeers (): Promise<void> {

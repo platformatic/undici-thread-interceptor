@@ -414,11 +414,33 @@ The returned value is both an Undici compose interceptor and an object with:
 - `interceptorId`
 - `ready`
 - `close()`
+- `ref()` and `unref()` — control whether idle mesh ports keep the thread alive
 - `updateMetadata(metadata)`
 - `getMesh()`
 - `createUpgradeAgent()` — a `node:http` `Agent` for routing upgrade requests from node:http clients (e.g. `ws`) through the mesh
 
 `interceptorId` defaults to a `crypto.randomUUID()` value. `coordinatorThreadId` defaults to `0`.
+
+### Event-loop lifetime
+
+Servers and interceptors are referenced by default. Calling `server.unref()` or
+`interceptor.unref()` lets the thread exit naturally when no application work remains,
+without closing mesh ports or preventing further requests. Both methods are idempotent
+and return the receiver; `ref()` restores the default behavior.
+
+Pending requests, including streamed response bodies and TCP mesh requests, queued
+server handlers, and coordinator operations keep their own reference until they finish
+or fail. New requests after `unref()` also retain a reference for their lifetime. Newly
+created idle peer ports inherit the current reference mode. Upgraded connections retain
+their own normal lifetime; `unref()` does not unreference an application's HTTP server
+or the coordinator.
+
+```js
+interceptor.unref()
+server.unref()
+// Mesh requests remain available while the application's shutdown work drains.
+// Call close() when communication is no longer needed.
+```
 
 ## Diagnostics
 
